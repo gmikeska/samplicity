@@ -797,8 +797,6 @@ dependencies = [
 [[package]]
 name = "esplora-rs"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df1485453a87c155654110f42278f2102e9bf21f6801c715a901b94ee908ae03"
 dependencies = [
  "async-trait",
  "bytes",

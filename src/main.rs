@@ -188,8 +188,13 @@ fn create_spend_preview_callback(
             }
         };
 
-        // Calculate preview
-        match calculate_spend_preview(&source_address, &destination, amount_sats, &utxos) {
+        // Calculate preview using only the first UTXO
+        // (we only spend one UTXO at a time for simplicity)
+        if utxos.is_empty() {
+            eprintln!("No UTXOs available for preview");
+            return None;
+        }
+        match calculate_spend_preview(&source_address, &destination, amount_sats, &utxos[..1]) {
             Ok(preview) => Some(SpendPreviewData {
                 source_address: preview.source_address,
                 destination: preview.destination,
@@ -243,7 +248,8 @@ fn create_spend_confirm_callback(
             }
 
             // 3. Calculate spend preview to get fee and change info
-            let preview = calculate_spend_preview(&source_address, &destination, amount_sats, &utxos)
+            // Only use the first UTXO (we spend one UTXO at a time for simplicity)
+            let preview = calculate_spend_preview(&source_address, &destination, amount_sats, &utxos[..1])
                 .map_err(|e| format!("Preview calculation failed: {}", e))?;
 
             // 4. Deploy change address if needed
@@ -291,13 +297,14 @@ fn create_spend_confirm_callback(
             // 7. Create spend orchestrator and execute
             let orchestrator = SpendOrchestrator::new(&program_path, address_params, genesis_hash);
 
+            // Only use the first UTXO (we spend one UTXO at a time)
             let (tx, _) = orchestrator
                 .execute_spend(
                     &source_address,
                     &source_script,
                     &pk_hash_bytes,
                     &pubkey_info.mnemonic,
-                    &utxos,
+                    &utxos[..1],
                     &destination,
                     amount_sats,
                     change_address_str.as_deref(),
@@ -306,7 +313,8 @@ fn create_spend_confirm_callback(
 
             // 8. Broadcast transaction via esplora
             let tx_hex = transaction_to_hex(&tx);
-            println!("Broadcasting transaction: {}...", &tx_hex[..64.min(tx_hex.len())]);
+            println!("Broadcasting transaction ({} bytes): {}", tx_hex.len() / 2, &tx_hex[..100.min(tx_hex.len())]);
+            println!("Full tx hex for debugging: {}", tx_hex);
 
             // Spawn a new thread with its own runtime for the blocking broadcast
             // (can't use block_on from within an async context)
@@ -315,11 +323,21 @@ fn create_spend_confirm_callback(
                 let rt = tokio::runtime::Runtime::new()
                     .map_err(|e| format!("Failed to create runtime: {}", e))?;
                 rt.block_on(async {
-                    balance_checker_clone
-                        .client()
-                        .broadcast_tx(&tx_hex)
-                        .await
-                        .map_err(|e| format!("Broadcast failed: {}", e))
+                    // Add a 30 second timeout
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        balance_checker_clone.client().broadcast_tx(&tx_hex)
+                    ).await {
+                        Ok(Ok(txid)) => Ok(txid),
+                        Ok(Err(e)) => {
+                            eprintln!("Broadcast error from Esplora: {}", e);
+                            Err(format!("Broadcast failed: {}", e))
+                        },
+                        Err(_) => {
+                            eprintln!("Broadcast timed out after 30 seconds");
+                            Err("Broadcast timed out after 30 seconds".to_string())
+                        },
+                    }
                 })
             })
             .join()
