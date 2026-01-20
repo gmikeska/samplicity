@@ -347,6 +347,12 @@ fn create_spend_confirm_callback(
                 )
                 .map_err(|e| format!("Failed to store change address: {}", e))?;
 
+                // Import change address to Elements wallet for balance tracking
+                if let Err(e) = rpc_client.import_address(&change_deployed.address, Some("samplicity"), false) {
+                    eprintln!("Warning: Failed to import change address to wallet: {}", e);
+                    // Continue anyway - address is stored, balance polling may be delayed
+                }
+
                 println!("Deployed change address: {}", change_deployed.address);
                 (Some(change_deployed.address), Some(preview.change_amount))
             } else {

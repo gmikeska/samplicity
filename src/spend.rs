@@ -257,10 +257,9 @@ pub fn parse_address(
 
 /// Get the L-BTC asset ID for testnet
 pub fn get_lbtc_asset_id() -> Result<elements::issuance::AssetId, SpendError> {
-    let bytes = hex::decode(LBTC_TESTNET_ASSET_ID)
-        .map_err(|e| SpendError::ProgramError(format!("Invalid asset ID hex: {}", e)))?;
-
-    elements::issuance::AssetId::from_slice(&bytes)
+    // Use from_str which handles the byte order conversion correctly
+    // (display format is big-endian, internal format is little-endian)
+    elements::issuance::AssetId::from_str(LBTC_TESTNET_ASSET_ID)
         .map_err(|e| SpendError::ProgramError(format!("Invalid asset ID: {}", e)))
 }
 
@@ -272,10 +271,8 @@ pub fn stored_utxo_to_musk_utxo(
     let txid = elements::Txid::from_str(&utxo.txid)
         .map_err(|e| SpendError::ProgramError(format!("Invalid txid: {}", e)))?;
 
-    let asset_bytes = hex::decode(&utxo.asset)
-        .map_err(|e| SpendError::ProgramError(format!("Invalid asset hex: {}", e)))?;
-
-    let asset_id = elements::issuance::AssetId::from_slice(&asset_bytes)
+    // Use from_str which handles byte order conversion correctly
+    let asset_id = elements::issuance::AssetId::from_str(&utxo.asset)
         .map_err(|e| SpendError::ProgramError(format!("Invalid asset ID: {}", e)))?;
 
     Ok(musk::client::Utxo {
