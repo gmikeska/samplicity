@@ -2,7 +2,7 @@
 //!
 //! Handles storage of pubkeys, addresses, and witness data.
 
-use rusqlite::{Connection, Result, params};
+use rusqlite::{params, Connection, Result};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -59,7 +59,7 @@ impl Database {
     /// Initialize the database schema
     fn init_schema(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS pubkeys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,7 +143,7 @@ impl Database {
         )?;
 
         let mut rows = stmt.query(params![address])?;
-        
+
         if let Some(row) = rows.next()? {
             Ok(Some(StoredAddress {
                 id: row.get(0)?,
@@ -162,13 +162,15 @@ impl Database {
     /// Update the balance for an address, returns true if balance changed
     pub fn update_balance(&self, address: &str, new_balance: u64) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        
+
         // Get current balance
-        let current: Option<i64> = conn.query_row(
-            "SELECT balance FROM addresses WHERE address = ?1",
-            params![address],
-            |row| row.get(0),
-        ).ok();
+        let current: Option<i64> = conn
+            .query_row(
+                "SELECT balance FROM addresses WHERE address = ?1",
+                params![address],
+                |row| row.get(0),
+            )
+            .ok();
 
         if let Some(current_balance) = current {
             if current_balance as u64 != new_balance {
@@ -179,7 +181,7 @@ impl Database {
                 return Ok(true);
             }
         }
-        
+
         Ok(false)
     }
 
@@ -190,11 +192,11 @@ impl Database {
             "SELECT p.id, p.pubkey, p.pubkey_sha2, p.mnemonic, p.created_at
              FROM pubkeys p
              JOIN addresses a ON a.pubkey_id = p.id
-             WHERE a.address = ?1"
+             WHERE a.address = ?1",
         )?;
 
         let mut rows = stmt.query(params![address])?;
-        
+
         if let Some(row) = rows.next()? {
             Ok(Some(StoredPubkey {
                 id: row.get(0)?,
@@ -223,20 +225,20 @@ mod tests {
     #[test]
     fn test_insert_and_retrieve() {
         let db = Database::open_in_memory().unwrap();
-        
+
         let pubkey = vec![1u8; 32];
         let pk_hash = "abc123";
         let mnemonic = "test mnemonic words";
-        
+
         let pubkey_id = db.insert_pubkey(&pubkey, pk_hash, mnemonic).unwrap();
         assert!(pubkey_id > 0);
-        
+
         let address = "tlq1ptest123";
         let witness_pk = vec![2u8; 32];
-        
+
         let addr_id = db.insert_address(address, pubkey_id, &witness_pk).unwrap();
         assert!(addr_id > 0);
-        
+
         let addresses = db.get_all_addresses().unwrap();
         assert_eq!(addresses.len(), 1);
         assert_eq!(addresses[0].address, address);
@@ -246,25 +248,24 @@ mod tests {
     #[test]
     fn test_balance_update() {
         let db = Database::open_in_memory().unwrap();
-        
+
         let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash", "mnemonic").unwrap();
         db.insert_address("addr1", pubkey_id, &[2u8; 32]).unwrap();
-        
+
         // Initial balance is 0
         let addr = db.get_address("addr1").unwrap().unwrap();
         assert_eq!(addr.balance, 0);
-        
+
         // Update balance
         let changed = db.update_balance("addr1", 100000).unwrap();
         assert!(changed);
-        
+
         // Verify update
         let addr = db.get_address("addr1").unwrap().unwrap();
         assert_eq!(addr.balance, 100000);
-        
+
         // Same balance should not report change
         let changed = db.update_balance("addr1", 100000).unwrap();
         assert!(!changed);
     }
 }
-

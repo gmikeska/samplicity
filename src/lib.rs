@@ -11,4 +11,3 @@ pub mod websocket;
 pub use balance::{BalanceChecker, BalanceResult};
 pub use db::{Database, StoredAddress, StoredPubkey};
 pub use deploy::{deploy_new_address, get_address_params, DeployedAddress};
-

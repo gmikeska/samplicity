@@ -30,23 +30,13 @@ pub enum ClientMessage {
 #[serde(tag = "type")]
 pub enum ServerMessage {
     #[serde(rename = "new_address")]
-    NewAddress {
-        address: String,
-        pk_hash: String,
-    },
+    NewAddress { address: String, pk_hash: String },
     #[serde(rename = "balance_update")]
-    BalanceUpdate {
-        address: String,
-        balance: u64,
-    },
+    BalanceUpdate { address: String, balance: u64 },
     #[serde(rename = "address_list")]
-    AddressList {
-        addresses: Vec<AddressInfo>,
-    },
+    AddressList { addresses: Vec<AddressInfo> },
     #[serde(rename = "error")]
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// Address info for frontend display
@@ -139,10 +129,10 @@ impl Actor for WsSession {
     fn started(&mut self, ctx: &mut Self::Context) {
         // Start the heartbeat process
         self.hb(ctx);
-        
+
         // Send initial address list
         self.send_address_list(ctx);
-        
+
         // Register with broadcaster if available
         if let Some(broadcaster) = &self.broadcaster {
             let addr = ctx.address();
@@ -328,4 +318,3 @@ pub async fn ws_index(
     let session = WsSession::new(db.get_ref().clone(), Some(broadcaster.get_ref().clone()));
     ws::start(session, &req, stream)
 }
-

@@ -58,7 +58,7 @@ pub fn deploy_new_address<P: AsRef<Path>>(
     let mut entropy = [0u8; 16];
     getrandom::fill(&mut entropy)
         .map_err(|e| DeployError::KeyGeneration(format!("Failed to generate entropy: {}", e)))?;
-    
+
     // Create mnemonic from entropy
     let mnemonic = Mnemonic::from_entropy(&entropy)
         .map_err(|e| DeployError::KeyGeneration(format!("Failed to create mnemonic: {}", e)))?;
@@ -133,7 +133,7 @@ mod tests {
         hasher.update(&test_bytes);
         let result: [u8; 32] = hasher.finalize().into();
         let hex_result = hex::encode(&result);
-        
+
         // SHA256 of 32 zero bytes
         assert_eq!(hex_result.len(), 64);
     }
@@ -143,11 +143,16 @@ mod tests {
         let testnet = get_address_params("testnet");
         let liquid = get_address_params("liquidv1");
         let regtest = get_address_params("regtest");
-        
+
         // Just verify they don't panic and return different params
-        assert!(std::ptr::eq(testnet, &musk::elements::AddressParams::LIQUID_TESTNET));
+        assert!(std::ptr::eq(
+            testnet,
+            &musk::elements::AddressParams::LIQUID_TESTNET
+        ));
         assert!(std::ptr::eq(liquid, &musk::elements::AddressParams::LIQUID));
-        assert!(std::ptr::eq(regtest, &musk::elements::AddressParams::ELEMENTS));
+        assert!(std::ptr::eq(
+            regtest,
+            &musk::elements::AddressParams::ELEMENTS
+        ));
     }
 }
-

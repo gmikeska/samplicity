@@ -6,10 +6,12 @@ use esplora_rs::{Client as EsploraClient, Error as EsploraError, Utxo};
 use std::sync::Arc;
 
 /// L-BTC asset ID for Liquid Testnet
-pub const LBTC_TESTNET_ASSET_ID: &str = "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
+pub const LBTC_TESTNET_ASSET_ID: &str =
+    "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
 
 /// L-BTC asset ID for Liquid Mainnet
-pub const LBTC_MAINNET_ASSET_ID: &str = "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
+pub const LBTC_MAINNET_ASSET_ID: &str =
+    "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d";
 
 /// Default Esplora URL for Liquid Testnet
 pub const ESPLORA_TESTNET_URL: &str = "https://blockstream.info/liquidtestnet/api/";
@@ -132,7 +134,10 @@ impl BalanceChecker {
     }
 
     /// Check balances for multiple addresses
-    pub async fn check_balances(&self, addresses: &[String]) -> Vec<Result<BalanceResult, BalanceError>> {
+    pub async fn check_balances(
+        &self,
+        addresses: &[String],
+    ) -> Vec<Result<BalanceResult, BalanceError>> {
         let mut results = Vec::with_capacity(addresses.len());
         for addr in addresses {
             results.push(self.check_balance(addr).await);
