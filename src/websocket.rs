@@ -35,6 +35,8 @@ pub enum ClientMessage {
         destination: String,
         amount_sats: u64,
     },
+    #[serde(rename = "delete_address")]
+    DeleteAddress { address: String },
 }
 
 /// Messages from server to client
@@ -69,6 +71,8 @@ pub enum ServerMessage {
     },
     #[serde(rename = "spend_error")]
     SpendError { message: String },
+    #[serde(rename = "address_deleted")]
+    AddressDeleted { address: String },
 }
 
 /// Address info for frontend display
@@ -230,6 +234,36 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
                                 amount_sats,
                                 reply_to: ctx.address(),
                             });
+                        }
+                    }
+                    Ok(ClientMessage::DeleteAddress { address }) => {
+                        // Delete address from database and broadcast to all clients
+                        match self.db.delete_address(&address) {
+                            Ok(true) => {
+                                // Successfully deleted - broadcast to all clients
+                                if let Some(broadcaster) = &self.broadcaster {
+                                    broadcaster.do_send(BroadcastMessage(
+                                        ServerMessage::AddressDeleted { address },
+                                    ));
+                                }
+                            }
+                            Ok(false) => {
+                                // Address not found
+                                let msg = ServerMessage::Error {
+                                    message: "Address not found".to_string(),
+                                };
+                                if let Ok(json) = serde_json::to_string(&msg) {
+                                    ctx.text(json);
+                                }
+                            }
+                            Err(e) => {
+                                let msg = ServerMessage::Error {
+                                    message: format!("Failed to delete address: {}", e),
+                                };
+                                if let Ok(json) = serde_json::to_string(&msg) {
+                                    ctx.text(json);
+                                }
+                            }
                         }
                     }
                     Err(e) => {

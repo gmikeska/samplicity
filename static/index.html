@@ -257,6 +257,37 @@
             font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
             font-size: 0.85rem;
         }
+        
+        .address-cell-wrapper {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+        }
+        
+        .address-content {
+            flex: 1;
+        }
+        
+        .btn-delete-address {
+            background: transparent;
+            border: 1px solid rgba(220, 53, 69, 0.5);
+            color: rgba(220, 53, 69, 0.7);
+            width: 24px;
+            height: 24px;
+            padding: 0;
+            border-radius: 4px;
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+        }
+        
+        .btn-delete-address:hover {
+            background: rgba(220, 53, 69, 0.2);
+            border-color: #dc3545;
+            color: #dc3545;
+        }
     </style>
 </head>
 <body>
@@ -464,6 +495,12 @@
                     showSpendError(msg.message);
                     break;
 
+                case 'address_deleted':
+                    // Remove the address from local state
+                    addresses = addresses.filter(a => a.address !== msg.address);
+                    renderAddresses();
+                    break;
+
                 case 'error':
                     console.error('Server error:', msg.message);
                     alert('Error: ' + msg.message);
@@ -519,6 +556,26 @@
             const btn = document.getElementById('deployBtn');
             btn.disabled = false;
             btn.innerHTML = '🚀 Deploy New Address';
+        }
+
+        // Check if an address is older than 3 minutes
+        function isAddressOlderThan3Minutes(deployedAt) {
+            const deployedTime = new Date(deployedAt).getTime();
+            const now = Date.now();
+            const threeMinutesMs = 3 * 60 * 1000;
+            return (now - deployedTime) > threeMinutesMs;
+        }
+
+        // Delete an unfunded address
+        function deleteAddress(address) {
+            if (!confirm('Are you sure you want to delete this address?')) {
+                return;
+            }
+            
+            ws.send(JSON.stringify({
+                type: 'delete_address',
+                address: address
+            }));
         }
 
         // Initiate a spend operation
@@ -672,11 +729,22 @@
                 return;
             }
 
-            tbody.innerHTML = addresses.map((addr, idx) => `
+            tbody.innerHTML = addresses.map((addr, idx) => {
+                const canDelete = addr.balance === 0 && isAddressOlderThan3Minutes(addr.deployed_at);
+                return `
                 <tr>
                     <td class="address-cell">
-                        <div>${addr.address}</div>
-                        <div class="pk-hash">PK Hash: ${addr.pk_hash.substring(0, 16)}...</div>
+                        <div class="address-cell-wrapper">
+                            <div class="address-content">
+                                <div>${addr.address}</div>
+                                <div class="pk-hash">PK Hash: ${addr.pk_hash.substring(0, 16)}...</div>
+                            </div>
+                            ${canDelete ? `
+                                <button class="btn-delete-address" 
+                                        onclick="deleteAddress('${addr.address}')" 
+                                        title="Delete unfunded address">×</button>
+                            ` : ''}
+                        </div>
                     </td>
                     <td>
                         <div class="qr-code" id="qr-${idx}"></div>
@@ -706,7 +774,7 @@
                         `}
                     </td>
                 </tr>
-            `).join('');
+            `}).join('');
 
             // Generate QR codes
             addresses.forEach((addr, idx) => {

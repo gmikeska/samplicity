@@ -304,6 +304,33 @@ pub fn build_and_sign_transaction(
     change_amount: u64,
     genesis_hash: elements::BlockHash,
 ) -> Result<elements::Transaction, SpendError> {
+    // === VERIFICATION: Prove input == outputs ===
+    let input_amount = utxo.amount;
+    let total_outputs = amount + fee + change_amount;
+    
+    println!("=== TRANSACTION VALUE VERIFICATION ===");
+    println!("  INPUT:  UTXO amount from DB = {} sats", input_amount);
+    println!("  OUTPUT: Destination amount  = {} sats", amount);
+    println!("  OUTPUT: Change amount       = {} sats", change_amount);
+    println!("  OUTPUT: Fee amount          = {} sats", fee);
+    println!("  TOTAL:  Sum of outputs      = {} sats", total_outputs);
+    println!("  UTXO:   txid={}, vout={}", utxo.txid, utxo.vout);
+    
+    if input_amount != total_outputs {
+        let diff = if input_amount > total_outputs {
+            input_amount - total_outputs
+        } else {
+            total_outputs - input_amount
+        };
+        eprintln!("  *** MISMATCH! Input != Outputs (diff = {} sats) ***", diff);
+        return Err(SpendError::ProgramError(format!(
+            "Value mismatch: input={} but outputs sum to {} (diff={})",
+            input_amount, total_outputs, diff
+        )));
+    }
+    println!("  [OK] Values match: {} == {}", input_amount, total_outputs);
+    println!("=======================================");
+    
     // 1. Load and instantiate the program
     let program = load_p2pkh_program(program_path, source_pk_hash)?;
 

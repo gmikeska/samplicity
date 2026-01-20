@@ -388,6 +388,57 @@ impl Database {
             .ok();
         Ok(result)
     }
+
+    /// Delete an address and its associated UTXOs
+    /// Returns true if the address was deleted, false if it wasn't found
+    pub fn delete_address(&self, address: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        // Get address ID and pubkey_id first
+        let addr_info: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT id, pubkey_id FROM addresses WHERE address = ?1",
+                params![address],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
+        let (address_id, pubkey_id) = match addr_info {
+            Some(info) => info,
+            None => return Ok(false), // Address not found
+        };
+
+        // Delete associated UTXOs
+        conn.execute(
+            "DELETE FROM utxos WHERE address_id = ?1",
+            params![address_id],
+        )?;
+
+        // Delete the address
+        conn.execute(
+            "DELETE FROM addresses WHERE id = ?1",
+            params![address_id],
+        )?;
+
+        // Check if the pubkey is still referenced by any other address
+        let pubkey_in_use: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM addresses WHERE pubkey_id = ?1",
+                params![pubkey_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        // If no other address uses this pubkey, delete it
+        if pubkey_in_use == 0 {
+            conn.execute(
+                "DELETE FROM pubkeys WHERE id = ?1",
+                params![pubkey_id],
+            )?;
+        }
+
+        Ok(true)
+    }
 }
 
 #[cfg(test)]

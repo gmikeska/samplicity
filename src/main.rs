@@ -19,6 +19,7 @@ use std::time::Duration;
 use balance::BalanceChecker;
 use db::Database;
 use deploy::{deploy_change_address, deploy_new_address, get_address_params, get_script_pubkey_for_pk_hash};
+use musk::{NodeClient, NodeConfig, RpcClient};
 use spend::{calculate_spend_preview, SpendOrchestrator, transaction_to_hex};
 use websocket::{
     ws_index, AddressInfo, BroadcastMessage, ServerMessage, SpendPreviewData, WsBroadcaster,
@@ -215,7 +216,7 @@ fn create_spend_preview_callback(
 /// Create spend confirm callback
 fn create_spend_confirm_callback(
     db: Database,
-    balance_checker: BalanceChecker,
+    rpc_client: Arc<RpcClient>,
     program_path: String,
     network: String,
 ) -> Box<dyn Fn(String, String, u64) -> Result<(String, Option<String>, Option<u64>, u64), String> + Send + Sync>
@@ -247,10 +248,30 @@ fn create_spend_confirm_callback(
                 return Err("No UTXOs available to spend".to_string());
             }
 
+            // === UTXO VERIFICATION ===
+            println!("=== UTXO DATA FROM DATABASE ===");
+            println!("  Source address: {}", source_address);
+            println!("  Total UTXOs: {}", utxos.len());
+            for (i, u) in utxos.iter().enumerate() {
+                println!("  UTXO[{}]: txid={}, vout={}, amount={} sats, asset={}",
+                    i, u.txid, u.vout, u.amount, &u.asset[..16]);
+            }
+            println!("  Using UTXO[0] with {} sats for this spend", utxos[0].amount);
+            println!("================================");
+
             // 3. Calculate spend preview to get fee and change info
             // Only use the first UTXO (we spend one UTXO at a time for simplicity)
             let preview = calculate_spend_preview(&source_address, &destination, amount_sats, &utxos[..1])
                 .map_err(|e| format!("Preview calculation failed: {}", e))?;
+            
+            // Log the preview
+            println!("=== SPEND PREVIEW ===");
+            println!("  Requested amount: {} sats", amount_sats);
+            println!("  Calculated fee:   {} sats", preview.fee);
+            println!("  Change amount:    {} sats (has_change={})", preview.change_amount, preview.has_change);
+            println!("  Total input:      {} sats", preview.total_input);
+            println!("  Sum of outputs:   {} sats", amount_sats + preview.fee + preview.change_amount);
+            println!("=====================");
 
             // 4. Deploy change address if needed
             let (change_address_str, change_amount) = if preview.has_change {
@@ -311,37 +332,19 @@ fn create_spend_confirm_callback(
                 )
                 .map_err(|e| format!("Spend execution failed: {}", e))?;
 
-            // 8. Broadcast transaction via esplora
+            // 8. Broadcast transaction via Elements node RPC
             let tx_hex = transaction_to_hex(&tx);
             println!("Broadcasting transaction ({} bytes): {}", tx_hex.len() / 2, &tx_hex[..100.min(tx_hex.len())]);
             println!("Full tx hex for debugging: {}", tx_hex);
 
-            // Spawn a new thread with its own runtime for the blocking broadcast
-            // (can't use block_on from within an async context)
-            let balance_checker_clone = balance_checker.clone();
-            let txid = std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new()
-                    .map_err(|e| format!("Failed to create runtime: {}", e))?;
-                rt.block_on(async {
-                    // Add a 30 second timeout
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(30),
-                        balance_checker_clone.client().broadcast_tx(&tx_hex)
-                    ).await {
-                        Ok(Ok(txid)) => Ok(txid),
-                        Ok(Err(e)) => {
-                            eprintln!("Broadcast error from Esplora: {}", e);
-                            Err(format!("Broadcast failed: {}", e))
-                        },
-                        Err(_) => {
-                            eprintln!("Broadcast timed out after 30 seconds");
-                            Err("Broadcast timed out after 30 seconds".to_string())
-                        },
-                    }
-                })
-            })
-            .join()
-            .map_err(|_| "Thread panicked during broadcast".to_string())??;
+            // Use the Elements RPC client to broadcast (synchronous, immediate response)
+            let rpc = rpc_client.clone();
+            let txid = rpc.broadcast(&tx)
+                .map_err(|e| {
+                    eprintln!("Broadcast error from Elements RPC: {}", e);
+                    format!("Broadcast failed: {}", e)
+                })?
+                .to_string();
 
             println!("Transaction broadcast! TXID: {}", txid);
 
@@ -361,8 +364,14 @@ fn create_spend_confirm_callback(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Initialize logging
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    // Initialize logging with tracing-subscriber
+    // Default: info for actix, debug for esplora_rs to see detailed API interactions
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,esplora_rs=debug".parse().unwrap())
+        )
+        .init();
 
     // Load configuration
     let network = load_config();
@@ -387,11 +396,20 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
+    // Create RPC client for broadcasting transactions via Elements node
+    let rpc_config = NodeConfig::from_file("musk.conf")
+        .expect("Failed to load musk.conf - make sure it exists and has valid RPC settings");
+    let rpc_client = Arc::new(
+        RpcClient::new(rpc_config)
+            .expect("Failed to create RPC client - check Elements node is running")
+    );
+    println!("RPC client created for transaction broadcasting");
+
     // Create callbacks for spend operations
     let spend_preview_cb = create_spend_preview_callback(db.clone());
     let spend_confirm_cb = create_spend_confirm_callback(
         db.clone(),
-        balance_checker.clone(),
+        rpc_client.clone(),
         "musk/p2pkh.simf".to_string(),
         network.clone(),
     );
