@@ -1,6 +1,6 @@
 //! SQLite database module for Samplicity
 //!
-//! Handles storage of pubkeys, addresses, and witness data.
+//! Handles storage of pubkeys, addresses, UTXOs, and witness data.
 
 use rusqlite::{params, Connection, Result};
 use std::path::Path;
@@ -33,6 +33,18 @@ pub struct StoredAddress {
     pub balance: u64,
     pub deployed_at: String,
     pub pk_hash: String,
+}
+
+/// Stored UTXO information
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StoredUtxo {
+    pub id: i64,
+    pub address_id: i64,
+    pub txid: String,
+    pub vout: u32,
+    pub amount: u64,
+    pub asset: String,
+    pub spent: bool,
 }
 
 impl Database {
@@ -80,6 +92,21 @@ impl Database {
                 balance INTEGER DEFAULT 0,
                 deployed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(pubkey_id) REFERENCES pubkeys(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS utxos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                address_id INTEGER NOT NULL,
+                txid TEXT NOT NULL,
+                vout INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                asset TEXT NOT NULL,
+                spent INTEGER DEFAULT 0,
+                FOREIGN KEY(address_id) REFERENCES addresses(id),
+                UNIQUE(txid, vout)
             )",
             [],
         )?;
@@ -209,6 +236,158 @@ impl Database {
             Ok(None)
         }
     }
+
+    // ==================== UTXO Methods ====================
+
+    /// Insert or update a UTXO (upsert based on txid+vout)
+    pub fn upsert_utxo(
+        &self,
+        address_id: i64,
+        txid: &str,
+        vout: u32,
+        amount: u64,
+        asset: &str,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO utxos (address_id, txid, vout, amount, asset, spent)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)
+             ON CONFLICT(txid, vout) DO UPDATE SET
+                amount = excluded.amount,
+                asset = excluded.asset",
+            params![address_id, txid, vout as i64, amount as i64, asset],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Get all unspent UTXOs for an address
+    pub fn get_unspent_utxos(&self, address: &str) -> Result<Vec<StoredUtxo>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT u.id, u.address_id, u.txid, u.vout, u.amount, u.asset, u.spent
+             FROM utxos u
+             JOIN addresses a ON u.address_id = a.id
+             WHERE a.address = ?1 AND u.spent = 0",
+        )?;
+
+        let utxos = stmt.query_map(params![address], |row| {
+            Ok(StoredUtxo {
+                id: row.get(0)?,
+                address_id: row.get(1)?,
+                txid: row.get(2)?,
+                vout: row.get::<_, i64>(3)? as u32,
+                amount: row.get::<_, i64>(4)? as u64,
+                asset: row.get(5)?,
+                spent: row.get::<_, i64>(6)? != 0,
+            })
+        })?;
+
+        utxos.collect()
+    }
+
+    /// Get all unspent UTXOs for an address by address_id
+    pub fn get_unspent_utxos_by_id(&self, address_id: i64) -> Result<Vec<StoredUtxo>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, address_id, txid, vout, amount, asset, spent
+             FROM utxos
+             WHERE address_id = ?1 AND spent = 0",
+        )?;
+
+        let utxos = stmt.query_map(params![address_id], |row| {
+            Ok(StoredUtxo {
+                id: row.get(0)?,
+                address_id: row.get(1)?,
+                txid: row.get(2)?,
+                vout: row.get::<_, i64>(3)? as u32,
+                amount: row.get::<_, i64>(4)? as u64,
+                asset: row.get(5)?,
+                spent: row.get::<_, i64>(6)? != 0,
+            })
+        })?;
+
+        utxos.collect()
+    }
+
+    /// Mark a UTXO as spent
+    pub fn mark_utxo_spent(&self, txid: &str, vout: u32) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows_affected = conn.execute(
+            "UPDATE utxos SET spent = 1 WHERE txid = ?1 AND vout = ?2",
+            params![txid, vout as i64],
+        )?;
+        Ok(rows_affected > 0)
+    }
+
+    /// Remove UTXOs that no longer exist (for cleanup during sync)
+    pub fn remove_utxos_not_in_list(&self, address_id: i64, keep_utxos: &[(String, u32)]) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        
+        if keep_utxos.is_empty() {
+            // Remove all UTXOs for this address
+            let removed = conn.execute(
+                "DELETE FROM utxos WHERE address_id = ?1",
+                params![address_id],
+            )?;
+            return Ok(removed);
+        }
+
+        // Build a list of (txid, vout) pairs to keep
+        let placeholders: Vec<String> = keep_utxos
+            .iter()
+            .map(|(txid, vout)| format!("('{}', {})", txid, vout))
+            .collect();
+        let values_list = placeholders.join(", ");
+
+        let sql = format!(
+            "DELETE FROM utxos WHERE address_id = ?1 AND (txid, vout) NOT IN (VALUES {})",
+            values_list
+        );
+
+        let removed = conn.execute(&sql, params![address_id])?;
+        Ok(removed)
+    }
+
+    /// Sync UTXOs from esplora data for an address
+    pub fn sync_utxos(
+        &self,
+        address: &str,
+        utxos: &[(String, u32, u64, String)], // (txid, vout, amount, asset)
+    ) -> Result<()> {
+        // Get address ID
+        let addr = self.get_address(address)?;
+        let address_id = match addr {
+            Some(a) => a.id,
+            None => return Ok(()), // Address not found, skip
+        };
+
+        // Upsert each UTXO
+        for (txid, vout, amount, asset) in utxos {
+            self.upsert_utxo(address_id, txid, *vout, *amount, asset)?;
+        }
+
+        // Remove UTXOs that are no longer present
+        let keep_list: Vec<(String, u32)> = utxos
+            .iter()
+            .map(|(txid, vout, _, _)| (txid.clone(), *vout))
+            .collect();
+        self.remove_utxos_not_in_list(address_id, &keep_list)?;
+
+        Ok(())
+    }
+
+    /// Get address ID by address string
+    pub fn get_address_id(&self, address: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM addresses WHERE address = ?1",
+                params![address],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -267,5 +446,65 @@ mod tests {
         // Same balance should not report change
         let changed = db.update_balance("addr1", 100000).unwrap();
         assert!(!changed);
+    }
+
+    #[test]
+    fn test_utxo_operations() {
+        let db = Database::open_in_memory().unwrap();
+
+        // Create address
+        let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash", "mnemonic").unwrap();
+        let addr_id = db.insert_address("addr1", pubkey_id, &[2u8; 32]).unwrap();
+
+        // Insert UTXOs
+        db.upsert_utxo(addr_id, "txid1", 0, 100000, "lbtc_asset").unwrap();
+        db.upsert_utxo(addr_id, "txid2", 1, 50000, "lbtc_asset").unwrap();
+
+        // Get unspent UTXOs
+        let utxos = db.get_unspent_utxos("addr1").unwrap();
+        assert_eq!(utxos.len(), 2);
+        assert_eq!(utxos.iter().map(|u| u.amount).sum::<u64>(), 150000);
+
+        // Mark one as spent
+        let marked = db.mark_utxo_spent("txid1", 0).unwrap();
+        assert!(marked);
+
+        // Should only have one unspent now
+        let utxos = db.get_unspent_utxos("addr1").unwrap();
+        assert_eq!(utxos.len(), 1);
+        assert_eq!(utxos[0].txid, "txid2");
+    }
+
+    #[test]
+    fn test_utxo_sync() {
+        let db = Database::open_in_memory().unwrap();
+
+        // Create address
+        let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash", "mnemonic").unwrap();
+        db.insert_address("addr1", pubkey_id, &[2u8; 32]).unwrap();
+
+        // Initial sync
+        let utxos = vec![
+            ("txid1".to_string(), 0u32, 100000u64, "lbtc".to_string()),
+            ("txid2".to_string(), 1u32, 50000u64, "lbtc".to_string()),
+        ];
+        db.sync_utxos("addr1", &utxos).unwrap();
+
+        let stored = db.get_unspent_utxos("addr1").unwrap();
+        assert_eq!(stored.len(), 2);
+
+        // Sync with one removed (txid1 spent externally)
+        let utxos = vec![
+            ("txid2".to_string(), 1u32, 50000u64, "lbtc".to_string()),
+            ("txid3".to_string(), 0u32, 75000u64, "lbtc".to_string()),
+        ];
+        db.sync_utxos("addr1", &utxos).unwrap();
+
+        let stored = db.get_unspent_utxos("addr1").unwrap();
+        assert_eq!(stored.len(), 2);
+        let txids: Vec<&str> = stored.iter().map(|u| u.txid.as_str()).collect();
+        assert!(txids.contains(&"txid2"));
+        assert!(txids.contains(&"txid3"));
+        assert!(!txids.contains(&"txid1"));
     }
 }

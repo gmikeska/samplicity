@@ -155,6 +155,91 @@ impl BalanceChecker {
 /// Shared balance checker for use across threads
 pub type SharedBalanceChecker = Arc<BalanceChecker>;
 
+impl BalanceChecker {
+    /// Check balance and sync UTXOs to database
+    ///
+    /// This fetches the balance and UTXOs from Esplora, updates the balance in the DB,
+    /// and syncs the UTXOs to the database.
+    pub async fn check_and_sync_balance(
+        &self,
+        address: &str,
+        db: &crate::db::Database,
+    ) -> Result<(BalanceResult, bool), BalanceError> {
+        let result = self.check_balance(address).await?;
+
+        // Sync UTXOs to database
+        let utxo_data: Vec<(String, u32, u64, String)> = result
+            .utxos
+            .iter()
+            .map(|u| (u.txid.clone(), u.vout, u.value, self.lbtc_asset_id.clone()))
+            .collect();
+
+        db.sync_utxos(address, &utxo_data)
+            .map_err(|e| BalanceError::EsploraError(format!("DB sync error: {}", e)))?;
+
+        // Update balance
+        let balance_changed = db
+            .update_balance(address, result.balance_sats)
+            .map_err(|e| BalanceError::EsploraError(format!("DB balance update error: {}", e)))?;
+
+        Ok((result, balance_changed))
+    }
+
+    /// Sync all addresses in the database
+    ///
+    /// Returns addresses that had balance changes.
+    pub async fn sync_all_addresses(
+        &self,
+        db: &crate::db::Database,
+    ) -> Vec<(String, u64)> {
+        let addresses = match db.get_all_addresses() {
+            Ok(addrs) => addrs,
+            Err(e) => {
+                eprintln!("Failed to get addresses from DB: {}", e);
+                return vec![];
+            }
+        };
+
+        let mut changes = Vec::new();
+
+        for addr in addresses {
+            match self.check_and_sync_balance(&addr.address, db).await {
+                Ok((result, changed)) => {
+                    if changed {
+                        println!("Balance changed for {}: {} sats", addr.address, result.balance_sats);
+                        changes.push((addr.address.clone(), result.balance_sats));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to check balance for {}: {}", addr.address, e);
+                }
+            }
+        }
+
+        changes
+    }
+
+    /// Get the genesis block hash for Liquid Testnet via Esplora
+    pub async fn get_genesis_hash(&self) -> Result<musk::elements::BlockHash, BalanceError> {
+        let hash_str = self.client.get_block_hash_from_height(0).await?;
+        musk::elements::BlockHash::from_str(&hash_str)
+            .map_err(|e| BalanceError::EsploraError(format!("Invalid genesis hash: {}", e)))
+    }
+
+    /// Get inner client reference for broadcasting
+    pub fn client(&self) -> &EsploraClient {
+        &self.client
+    }
+
+    /// Get the L-BTC asset ID
+    pub fn lbtc_asset_id(&self) -> &str {
+        &self.lbtc_asset_id
+    }
+}
+
+// Import for BlockHash::from_str
+use std::str::FromStr;
+
 #[cfg(test)]
 mod tests {
     use super::*;

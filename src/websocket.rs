@@ -23,6 +23,18 @@ pub enum ClientMessage {
     Deploy,
     #[serde(rename = "refresh")]
     Refresh,
+    #[serde(rename = "spend_preview")]
+    SpendPreviewRequest {
+        source_address: String,
+        destination: String,
+        amount_sats: u64,
+    },
+    #[serde(rename = "spend_confirm")]
+    SpendConfirm {
+        source_address: String,
+        destination: String,
+        amount_sats: u64,
+    },
 }
 
 /// Messages from server to client
@@ -37,6 +49,26 @@ pub enum ServerMessage {
     AddressList { addresses: Vec<AddressInfo> },
     #[serde(rename = "error")]
     Error { message: String },
+    #[serde(rename = "spend_preview")]
+    SpendPreviewResult {
+        source_address: String,
+        destination: String,
+        amount: u64,
+        fee: u64,
+        change_amount: u64,
+        has_change: bool,
+        total_input: u64,
+    },
+    #[serde(rename = "spend_success")]
+    SpendSuccess {
+        txid: String,
+        amount: u64,
+        fee: u64,
+        change_address: Option<String>,
+        change_amount: Option<u64>,
+    },
+    #[serde(rename = "spend_error")]
+    SpendError { message: String },
 }
 
 /// Address info for frontend display
@@ -172,6 +204,34 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
                     Ok(ClientMessage::Refresh) => {
                         self.send_address_list(ctx);
                     }
+                    Ok(ClientMessage::SpendPreviewRequest {
+                        source_address,
+                        destination,
+                        amount_sats,
+                    }) => {
+                        if let Some(broadcaster) = &self.broadcaster {
+                            broadcaster.do_send(SpendPreviewRequest {
+                                source_address,
+                                destination,
+                                amount_sats,
+                                reply_to: ctx.address(),
+                            });
+                        }
+                    }
+                    Ok(ClientMessage::SpendConfirm {
+                        source_address,
+                        destination,
+                        amount_sats,
+                    }) => {
+                        if let Some(broadcaster) = &self.broadcaster {
+                            broadcaster.do_send(SpendConfirmRequest {
+                                source_address,
+                                destination,
+                                amount_sats,
+                                reply_to: ctx.address(),
+                            });
+                        }
+                    }
                     Err(e) => {
                         let msg = ServerMessage::Error {
                             message: format!("Invalid message: {}", e),
@@ -224,10 +284,50 @@ pub struct UnregisterSession {
 #[rtype(result = "()")]
 pub struct DeployRequest;
 
+/// Message to request a spend preview
+#[derive(Message, Clone)]
+#[rtype(result = "()")]
+pub struct SpendPreviewRequest {
+    pub source_address: String,
+    pub destination: String,
+    pub amount_sats: u64,
+    pub reply_to: Addr<WsSession>,
+}
+
+/// Message to confirm and execute a spend
+#[derive(Message, Clone)]
+#[rtype(result = "()")]
+pub struct SpendConfirmRequest {
+    pub source_address: String,
+    pub destination: String,
+    pub amount_sats: u64,
+    pub reply_to: Addr<WsSession>,
+}
+
+/// SpendPreview struct for websocket responses (mirrors spend::SpendPreview)
+#[derive(Debug, Clone, Serialize)]
+pub struct SpendPreviewData {
+    pub source_address: String,
+    pub destination: String,
+    pub amount: u64,
+    pub fee: u64,
+    pub change_amount: u64,
+    pub has_change: bool,
+    pub total_input: u64,
+}
+
+/// Callback type for spend preview requests
+pub type SpendPreviewCallback = Box<dyn Fn(String, String, u64) -> Option<SpendPreviewData> + Send + Sync>;
+
+/// Callback type for spend confirm requests  
+pub type SpendConfirmCallback = Box<dyn Fn(String, String, u64) -> Result<(String, Option<String>, Option<u64>, u64), String> + Send + Sync>;
+
 /// Broadcaster actor that manages all WebSocket sessions
 pub struct WsBroadcaster {
     sessions: Vec<Addr<WsSession>>,
     deploy_callback: Option<Box<dyn Fn() + Send + Sync>>,
+    spend_preview_callback: Option<SpendPreviewCallback>,
+    spend_confirm_callback: Option<SpendConfirmCallback>,
 }
 
 impl WsBroadcaster {
@@ -235,6 +335,8 @@ impl WsBroadcaster {
         Self {
             sessions: Vec::new(),
             deploy_callback: None,
+            spend_preview_callback: None,
+            spend_confirm_callback: None,
         }
     }
 
@@ -243,6 +345,16 @@ impl WsBroadcaster {
         F: Fn() + Send + Sync + 'static,
     {
         self.deploy_callback = Some(Box::new(callback));
+        self
+    }
+
+    pub fn with_spend_preview_callback(mut self, callback: SpendPreviewCallback) -> Self {
+        self.spend_preview_callback = Some(callback);
+        self
+    }
+
+    pub fn with_spend_confirm_callback(mut self, callback: SpendConfirmCallback) -> Self {
+        self.spend_confirm_callback = Some(callback);
         self
     }
 
@@ -256,7 +368,12 @@ impl WsBroadcaster {
 
 impl Default for WsBroadcaster {
     fn default() -> Self {
-        Self::new()
+        Self {
+            sessions: Vec::new(),
+            deploy_callback: None,
+            spend_preview_callback: None,
+            spend_confirm_callback: None,
+        }
     }
 }
 
@@ -296,6 +413,64 @@ impl Handler<BroadcastMessage> for WsBroadcaster {
 
     fn handle(&mut self, msg: BroadcastMessage, _: &mut Self::Context) {
         self.broadcast(msg.0);
+    }
+}
+
+impl Handler<SpendPreviewRequest> for WsBroadcaster {
+    type Result = ();
+
+    fn handle(&mut self, msg: SpendPreviewRequest, _: &mut Self::Context) {
+        let response = if let Some(callback) = &self.spend_preview_callback {
+            match callback(msg.source_address.clone(), msg.destination.clone(), msg.amount_sats) {
+                Some(preview) => ServerMessage::SpendPreviewResult {
+                    source_address: preview.source_address.clone(),
+                    destination: preview.destination.clone(),
+                    amount: preview.amount,
+                    fee: preview.fee,
+                    change_amount: preview.change_amount,
+                    has_change: preview.has_change,
+                    total_input: preview.total_input,
+                },
+                None => ServerMessage::SpendError {
+                    message: "Failed to calculate spend preview".to_string(),
+                },
+            }
+        } else {
+            ServerMessage::SpendError {
+                message: "Spend preview not configured".to_string(),
+            }
+        };
+
+        msg.reply_to.do_send(BroadcastMessage(response));
+    }
+}
+
+impl Handler<SpendConfirmRequest> for WsBroadcaster {
+    type Result = ();
+
+    fn handle(&mut self, msg: SpendConfirmRequest, _: &mut Self::Context) {
+        let response = if let Some(callback) = &self.spend_confirm_callback {
+            match callback(msg.source_address.clone(), msg.destination.clone(), msg.amount_sats) {
+                Ok((txid, change_address, change_amount, fee)) => {
+                    // Broadcast success to all clients
+                    self.broadcast(ServerMessage::SpendSuccess {
+                        txid: txid.clone(),
+                        amount: msg.amount_sats,
+                        fee,
+                        change_address: change_address.clone(),
+                        change_amount,
+                    });
+                    return; // Already broadcast to everyone
+                }
+                Err(e) => ServerMessage::SpendError { message: e },
+            }
+        } else {
+            ServerMessage::SpendError {
+                message: "Spend not configured".to_string(),
+            }
+        };
+
+        msg.reply_to.do_send(BroadcastMessage(response));
     }
 }
 

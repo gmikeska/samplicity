@@ -121,6 +121,43 @@ pub fn get_address_params(network: &str) -> &'static musk::elements::AddressPara
     }
 }
 
+/// Deploy a change address for a spending transaction
+///
+/// This is essentially the same as `deploy_new_address` - change addresses
+/// are regular p2pkh addresses that receive the remainder from a spend.
+pub fn deploy_change_address<P: AsRef<Path>>(
+    program_path: P,
+    address_params: &'static musk::elements::AddressParams,
+) -> Result<DeployedAddress, DeployError> {
+    deploy_new_address(program_path, address_params)
+}
+
+/// Get the script pubkey for a given public key hash
+///
+/// This loads the p2pkh program, instantiates it with the given pk_hash,
+/// and returns the compiled script pubkey.
+pub fn get_script_pubkey_for_pk_hash<P: AsRef<Path>>(
+    program_path: P,
+    pk_hash: &[u8; 32],
+    address_params: &'static musk::elements::AddressParams,
+) -> Result<musk::elements::Script, DeployError> {
+    let program = Program::from_file(program_path)
+        .map_err(|e| DeployError::ProgramLoad(format!("Failed to load program: {}", e)))?;
+
+    let mut args = HashMap::new();
+    args.insert(
+        WitnessName::from_str_unchecked("PK_HASH"),
+        Value::u256(U256::from_byte_array(*pk_hash)),
+    );
+
+    let compiled = program
+        .instantiate(Arguments::from(args))
+        .map_err(|e| DeployError::Compilation(format!("Failed to instantiate program: {}", e)))?;
+
+    let address = compiled.address(address_params);
+    Ok(address.script_pubkey())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
