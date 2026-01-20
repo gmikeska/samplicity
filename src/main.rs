@@ -32,6 +32,7 @@ struct AppState {
     network: String,
     program_path: String,
     balance_checker: BalanceChecker,
+    rpc_client: Arc<RpcClient>,
 }
 
 /// Deploy a new address endpoint
@@ -53,6 +54,19 @@ async fn deploy_address(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
                         .insert_address(&deployed.address, pubkey_id, &deployed.pubkey)
                     {
                         Ok(_) => {
+                            // Import address to Elements wallet for UTXO tracking
+                            // Use rescan=false for speed (new addresses won't have history)
+                            if let Err(e) = state.rpc_client.import_address(
+                                &deployed.address,
+                                Some("samplicity"),
+                                false,
+                            ) {
+                                eprintln!("Warning: Failed to import address to wallet: {}", e);
+                                // Continue anyway - address is stored, just won't show in listunspent
+                            } else {
+                                println!("Imported address to wallet: {}", deployed.address);
+                            }
+
                             // Broadcast to all WebSocket clients
                             state.broadcaster.do_send(BroadcastMessage(
                                 ServerMessage::NewAddress {
@@ -108,10 +122,10 @@ async fn index() -> impl Responder {
         .body(include_str!("../static/index.html"))
 }
 
-/// Background task for checking balances and syncing UTXOs
+/// Background task for checking balances and syncing UTXOs using Elements RPC
 async fn balance_polling_task(
     db: Database,
-    balance_checker: BalanceChecker,
+    rpc_client: Arc<RpcClient>,
     broadcaster: Addr<WsBroadcaster>,
 ) {
     // Sleep first to let the server start
@@ -128,25 +142,64 @@ async fn balance_polling_task(
             }
         };
 
-        // Check each address balance and sync UTXOs
+        // Check each address balance via RPC
         for addr in addresses {
-            match balance_checker.check_and_sync_balance(&addr.address, &db).await {
-                Ok((result, changed)) => {
-                    if changed {
-                        println!(
-                            "Balance updated for {}: {} sats ({} UTXOs)",
-                            addr.address, result.balance_sats, result.utxo_count
-                        );
+            // Parse address string to Address type
+            let address = match musk::elements::Address::from_str(&addr.address) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("Failed to parse address {}: {}", addr.address, e);
+                    continue;
+                }
+            };
 
-                        // Broadcast update to clients
-                        broadcaster.do_send(BroadcastMessage(ServerMessage::BalanceUpdate {
-                            address: addr.address,
-                            balance: result.balance_sats,
-                        }));
+            // Get UTXOs from Elements wallet via RPC
+            match rpc_client.get_utxos(&address) {
+                Ok(utxos) => {
+                    // Calculate total balance
+                    let balance_sats: u64 = utxos.iter().map(|u| u.amount).sum();
+                    let utxo_count = utxos.len();
+
+                    // Sync UTXOs to database
+                    let utxo_data: Vec<(String, u32, u64, String)> = utxos
+                        .iter()
+                        .map(|u| {
+                            (
+                                u.txid.to_string(),
+                                u.vout,
+                                u.amount,
+                                balance::LBTC_TESTNET_ASSET_ID.to_string(), // Assume L-BTC
+                            )
+                        })
+                        .collect();
+
+                    if let Err(e) = db.sync_utxos(&addr.address, &utxo_data) {
+                        eprintln!("Failed to sync UTXOs for {}: {}", addr.address, e);
+                    }
+
+                    // Update balance in DB and check if changed
+                    match db.update_balance(&addr.address, balance_sats) {
+                        Ok(changed) => {
+                            if changed {
+                                println!(
+                                    "Balance updated for {}: {} sats ({} UTXOs)",
+                                    addr.address, balance_sats, utxo_count
+                                );
+
+                                // Broadcast update to clients
+                                broadcaster.do_send(BroadcastMessage(ServerMessage::BalanceUpdate {
+                                    address: addr.address.clone(),
+                                    balance: balance_sats,
+                                }));
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to update balance for {}: {}", addr.address, e);
+                        }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to check/sync balance for {}: {}", addr.address, e);
+                    eprintln!("Failed to get UTXOs for {} via RPC: {}", addr.address, e);
                 }
             }
         }
@@ -405,6 +458,17 @@ async fn main() -> std::io::Result<()> {
     );
     println!("RPC client created for transaction broadcasting");
 
+    // Import existing addresses to Elements wallet (no rescan since they're likely recent)
+    if let Ok(existing_addrs) = db.get_all_addresses() {
+        println!("Importing {} existing addresses to Elements wallet...", existing_addrs.len());
+        for addr in existing_addrs {
+            if let Err(e) = rpc_client.import_address(&addr.address, Some("samplicity"), false) {
+                eprintln!("  Warning: Failed to import {}: {}", &addr.address[..20], e);
+            }
+        }
+        println!("Address import complete");
+    }
+
     // Create callbacks for spend operations
     let spend_preview_cb = create_spend_preview_callback(db.clone());
     let spend_confirm_cb = create_spend_confirm_callback(
@@ -422,14 +486,14 @@ async fn main() -> std::io::Result<()> {
 
     // Clone for background task
     let db_clone = db.clone();
-    let balance_checker_clone = balance_checker.clone();
+    let rpc_client_clone = rpc_client.clone();
     let broadcaster_clone = broadcaster.clone();
 
-    // Start balance poller as async task
+    // Start balance poller as async task using Elements RPC
     tokio::spawn(async move {
-        balance_polling_task(db_clone, balance_checker_clone, broadcaster_clone).await;
+        balance_polling_task(db_clone, rpc_client_clone, broadcaster_clone).await;
     });
-    println!("Balance poller started (using esplora-rs with UTXO sync)");
+    println!("Balance poller started (using Elements RPC for UTXO sync)");
 
     // Create app state
     let app_state = Arc::new(Mutex::new(AppState {
@@ -438,6 +502,7 @@ async fn main() -> std::io::Result<()> {
         network,
         program_path: "musk/p2pkh.simf".to_string(),
         balance_checker: balance_checker.clone(),
+        rpc_client: rpc_client.clone(),
     }));
 
     println!("Starting server at http://127.0.0.1:8080");
