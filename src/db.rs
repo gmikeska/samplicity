@@ -348,7 +348,7 @@ impl Database {
         Ok(removed)
     }
 
-    /// Sync UTXOs from esplora data for an address
+    /// Sync UTXOs from RPC data for an address
     pub fn sync_utxos(
         &self,
         address: &str,

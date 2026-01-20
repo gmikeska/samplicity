@@ -1,9 +1,8 @@
 //! Samplicity - A Simplicity Sample Web Application
 //!
 //! This application demonstrates deploying and managing Simplicity p2pkh addresses
-//! with a web interface, WebSocket updates, and balance monitoring via esplora-rs.
+//! with a web interface, WebSocket updates, and balance monitoring via Elements RPC.
 
-mod balance;
 mod db;
 mod deploy;
 mod spend;
@@ -16,7 +15,6 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use balance::BalanceChecker;
 use db::Database;
 use deploy::{deploy_change_address, deploy_new_address, get_address_params, get_script_pubkey_for_pk_hash};
 use musk::{NodeClient, NodeConfig, RpcClient};
@@ -31,7 +29,6 @@ struct AppState {
     broadcaster: Addr<WsBroadcaster>,
     network: String,
     program_path: String,
-    balance_checker: BalanceChecker,
     rpc_client: Arc<RpcClient>,
 }
 
@@ -168,7 +165,7 @@ async fn balance_polling_task(
                                 u.txid.to_string(),
                                 u.vout,
                                 u.amount,
-                                balance::LBTC_TESTNET_ASSET_ID.to_string(), // Assume L-BTC
+                                spend::LBTC_TESTNET_ASSET_ID.to_string(), // Assume L-BTC
                             )
                         })
                         .collect();
@@ -424,11 +421,10 @@ fn create_spend_confirm_callback(
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Initialize logging with tracing-subscriber
-    // Default: info for actix, debug for esplora_rs to see detailed API interactions
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,esplora_rs=debug".parse().unwrap())
+                .unwrap_or_else(|_| "info".parse().unwrap())
         )
         .init();
 
@@ -439,21 +435,6 @@ async fn main() -> std::io::Result<()> {
     // Initialize database
     let db = Database::open("samplicity.db").expect("Failed to open database");
     println!("Database initialized");
-
-    // Initialize balance checker using esplora-rs
-    let balance_checker = match network.as_str() {
-        "liquidv1" => {
-            println!("Using Liquid Mainnet Esplora API");
-            BalanceChecker::new_mainnet().expect("Failed to create mainnet balance checker")
-        }
-        _ => {
-            println!(
-                "Using Liquid Testnet Esplora API: {}",
-                balance::ESPLORA_TESTNET_URL
-            );
-            BalanceChecker::new_testnet().expect("Failed to create testnet balance checker")
-        }
-    };
 
     // Create RPC client for broadcasting transactions via Elements node
     let rpc_config = NodeConfig::from_file("musk.conf")
@@ -507,7 +488,6 @@ async fn main() -> std::io::Result<()> {
         broadcaster: broadcaster.clone(),
         network,
         program_path: "musk/p2pkh.simf".to_string(),
-        balance_checker: balance_checker.clone(),
         rpc_client: rpc_client.clone(),
     }));
 
