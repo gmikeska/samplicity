@@ -1,8 +1,8 @@
 # Samplicity
 
-**A sample application demonstrating how to integrate Simplicity smart contracts using the [musk](https://github.com/BlockstreamResearch/s-lang) SDK.**
+**A sample application demonstrating how to integrate Simplicity smart contracts using the [musk](https://github.com/gmikeska/musk) SDK.**
 
-Samplicity is a web application that deploys and manages Simplicity-based Pay-to-Public-Key-Hash (P2PKH) addresses on Elements/Liquid networks. It serves as a reference implementation for developers building applications with Simplicity contracts.
+Samplicity is a web application that deploys and manages Simplicity-based Pay-to-Public-Key-Hash (P2PKH) addresses on Elements/Liquid networks. It serves as a reference implementation for developers building applications with Musk for Simplicity contracts.
 
 ## Features
 
@@ -10,8 +10,6 @@ Samplicity is a web application that deploys and manages Simplicity-based Pay-to
 - **Real-time Balance Monitoring** — Track UTXOs via Elements RPC with WebSocket updates
 - **Spend from Simplicity Addresses** — Build, sign, and broadcast transactions using the musk SDK
 - **Transaction Validation Testing** — Comprehensive test suite for validating transaction formation
-
-![Samplicity Screenshot](https://placeholder.example.com/samplicity-screenshot.png)
 
 ---
 
