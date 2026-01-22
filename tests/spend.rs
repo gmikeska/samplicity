@@ -6,7 +6,7 @@ use samplicity::spend::{
     build_witness_values, calculate_spend_preview, compute_pk_hash,
     derive_secret_key_from_mnemonic, get_lbtc_asset_id, get_xonly_pubkey, parse_address,
     sign_schnorr_with_bytes, stored_utxo_to_musk_utxo, transaction_to_hex, validate_key_pair,
-    SpendError, SpendOrchestrator, DEFAULT_FEE_SATS, DUST_THRESHOLD, LBTC_TESTNET_ASSET_ID,
+    SpendError, SpendOrchestrator, DUST_THRESHOLD, LBTC_TESTNET_ASSET_ID, MIN_FEE_SATS,
 };
 
 /// Test mnemonic for consistent results
@@ -136,9 +136,11 @@ fn test_calculate_spend_preview_with_change() {
 
     let preview = calculate_spend_preview("src", "dst", 50000, &utxos).unwrap();
     assert_eq!(preview.amount, 50000);
-    assert_eq!(preview.fee, DEFAULT_FEE_SATS);
+    // Fee is now dynamic based on tx size, just verify it's at least MIN_FEE_SATS
+    assert!(preview.fee >= MIN_FEE_SATS, "Fee {} should be >= MIN_FEE_SATS {}", preview.fee, MIN_FEE_SATS);
     assert!(preview.has_change);
-    assert_eq!(preview.change_amount, 100_000 - 50_000 - DEFAULT_FEE_SATS);
+    // Change = total input - send amount - fee
+    assert_eq!(preview.change_amount, 100_000 - 50_000 - preview.fee);
 }
 
 #[test]
@@ -332,9 +334,9 @@ fn test_dust_threshold_constant() {
 }
 
 #[test]
-fn test_default_fee_constant() {
-    // Verify default fee is reasonable (500 sats)
-    assert_eq!(DEFAULT_FEE_SATS, 500);
+fn test_min_fee_constant() {
+    // Verify minimum fee is reasonable (250 sats floor)
+    assert_eq!(MIN_FEE_SATS, 250);
 }
 
 #[test]

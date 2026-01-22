@@ -28,8 +28,29 @@ pub const LBTC_TESTNET_ASSET_ID: &str =
 /// Dust threshold in satoshis (below this, no change output is created)
 pub const DUST_THRESHOLD: u64 = 546;
 
-/// Default fee in satoshis (safe buffer for ~1000-3000 vbyte tx at 0.1-0.5 sat/vbyte)
-pub const DEFAULT_FEE_SATS: u64 = 500;
+/// Default fee rate in satoshis per kilobyte (fallback when estimation fails)
+pub const DEFAULT_FEE_RATE_SAT_PER_KB: u64 = 1000; // 1 sat/byte
+
+/// Minimum fee in satoshis (floor for very small transactions)
+pub const MIN_FEE_SATS: u64 = 250;
+
+/// Estimated sizes for transaction components (in bytes)
+mod tx_size {
+    /// Base transaction overhead (version, locktime, input/output counts)
+    pub const BASE: usize = 10;
+
+    /// Per-input size (Simplicity/Taproot inputs are larger than segwit)
+    pub const INPUT: usize = 150;
+
+    /// Per-output size for explicit outputs
+    pub const OUTPUT_EXPLICIT: usize = 45;
+
+    /// Per-output size for confidential outputs (includes range proofs)
+    pub const OUTPUT_CONFIDENTIAL: usize = 2500;
+
+    /// Fee output size
+    pub const FEE_OUTPUT: usize = 45;
+}
 
 /// Check if an address is confidential based on its prefix
 ///
@@ -182,51 +203,192 @@ pub fn validate_key_pair(secret_key: &[u8; 32], stored_pubkey: &[u8]) -> Result<
     Ok(derived_pubkey.as_slice() == stored_pubkey)
 }
 
-/// Calculate spend preview (fee estimation, change calculation)
+/// Estimate transaction size based on input/output count and confidentiality
+///
+/// # Arguments
+///
+/// * `num_inputs` - Number of UTXOs being spent
+/// * `dest_is_confidential` - Whether the destination is confidential
+/// * `has_change` - Whether a change output will be created
+/// * `change_is_confidential` - Whether the change output is confidential
+fn estimate_tx_size(
+    num_inputs: usize,
+    dest_is_confidential: bool,
+    has_change: bool,
+    change_is_confidential: bool,
+) -> usize {
+    let mut size = tx_size::BASE;
+
+    // Add input sizes
+    size += tx_size::INPUT * num_inputs;
+
+    // Add destination output size
+    size += if dest_is_confidential {
+        tx_size::OUTPUT_CONFIDENTIAL
+    } else {
+        tx_size::OUTPUT_EXPLICIT
+    };
+
+    // Add change output size if applicable
+    if has_change {
+        size += if change_is_confidential {
+            tx_size::OUTPUT_CONFIDENTIAL
+        } else {
+            tx_size::OUTPUT_EXPLICIT
+        };
+    }
+
+    // Add fee output
+    size += tx_size::FEE_OUTPUT;
+
+    size
+}
+
+/// Calculate fee from estimated transaction size and fee rate
+///
+/// # Arguments
+///
+/// * `tx_size` - Estimated transaction size in bytes
+/// * `fee_rate_sat_per_kb` - Fee rate in satoshis per kilobyte
+fn calculate_fee_from_size(tx_size: usize, fee_rate_sat_per_kb: u64) -> u64 {
+    #[allow(clippy::cast_possible_truncation)]
+    let fee = (tx_size as u64 * fee_rate_sat_per_kb) / 1000;
+    fee.max(MIN_FEE_SATS)
+}
+
+/// Calculate spend preview (fee estimation, change calculation) with dynamic fee
+///
+/// # Arguments
+///
+/// * `source_address` - Source address
+/// * `destination` - Destination address
+/// * `amount` - Amount to send in satoshis
+/// * `utxos` - Available UTXOs to spend
+/// * `fee_rate_sat_per_kb` - Optional fee rate (uses default if None)
 pub fn calculate_spend_preview(
     source_address: &str,
     destination: &str,
     amount: u64,
     utxos: &[StoredUtxo],
 ) -> Result<SpendPreview, SpendError> {
+    calculate_spend_preview_with_fee_rate(
+        source_address,
+        destination,
+        amount,
+        utxos,
+        None,
+        None,
+    )
+}
+
+/// Calculate spend preview with explicit fee rate and change address
+///
+/// # Arguments
+///
+/// * `source_address` - Source address
+/// * `destination` - Destination address
+/// * `amount` - Amount to send in satoshis
+/// * `utxos` - Available UTXOs to spend (all will be consumed)
+/// * `fee_rate_sat_per_kb` - Optional fee rate in sat/kB (uses default if None)
+/// * `change_address` - Optional change address (needed to determine if change is confidential)
+pub fn calculate_spend_preview_with_fee_rate(
+    source_address: &str,
+    destination: &str,
+    amount: u64,
+    utxos: &[StoredUtxo],
+    fee_rate_sat_per_kb: Option<u64>,
+    change_address: Option<&str>,
+) -> Result<SpendPreview, SpendError> {
     if utxos.is_empty() {
         return Err(SpendError::NoUtxos);
     }
 
-    // Calculate total available
+    let fee_rate = fee_rate_sat_per_kb.unwrap_or(DEFAULT_FEE_RATE_SAT_PER_KB);
+
+    // Calculate total available from ALL UTXOs
     let total_input: u64 = utxos.iter().map(|u| u.amount).sum();
 
-    // Calculate required amount (send + fee)
-    let required = amount.saturating_add(DEFAULT_FEE_SATS);
+    // Determine confidentiality for fee estimation
+    let dest_is_confidential = is_confidential_address(destination);
+    let change_is_confidential = change_address.map_or(false, is_confidential_address);
 
-    if total_input < required {
-        return Err(SpendError::InsufficientFunds {
-            available: total_input,
-            required,
+    // First pass: estimate with change output
+    let size_with_change = estimate_tx_size(
+        utxos.len(),
+        dest_is_confidential,
+        true,
+        change_is_confidential,
+    );
+    let fee_with_change = calculate_fee_from_size(size_with_change, fee_rate);
+
+    // Calculate required amount (send + fee)
+    let required_with_change = amount.saturating_add(fee_with_change);
+
+    if total_input < required_with_change {
+        // Try without change output (lower fee)
+        let size_no_change = estimate_tx_size(utxos.len(), dest_is_confidential, false, false);
+        let fee_no_change = calculate_fee_from_size(size_no_change, fee_rate);
+        let required_no_change = amount.saturating_add(fee_no_change);
+
+        if total_input < required_no_change {
+            return Err(SpendError::InsufficientFunds {
+                available: total_input,
+                required: required_with_change,
+            });
+        }
+
+        // No change output case - remainder goes to fee
+        let actual_fee = total_input.saturating_sub(amount);
+        return Ok(SpendPreview {
+            source_address: source_address.to_string(),
+            destination: destination.to_string(),
+            amount,
+            fee: actual_fee,
+            change_amount: 0,
+            has_change: false,
+            total_input,
         });
     }
 
     // Calculate change
-    let change_amount = total_input.saturating_sub(required);
+    let change_amount = total_input.saturating_sub(required_with_change);
     let has_change = change_amount > DUST_THRESHOLD;
-    let final_change = if has_change { change_amount } else { 0 };
 
-    // If no change output, the remainder goes to fees
-    let actual_fee = if has_change {
-        DEFAULT_FEE_SATS
+    if has_change {
+        Ok(SpendPreview {
+            source_address: source_address.to_string(),
+            destination: destination.to_string(),
+            amount,
+            fee: fee_with_change,
+            change_amount,
+            has_change: true,
+            total_input,
+        })
     } else {
-        total_input.saturating_sub(amount)
-    };
+        // Change would be dust, add it to fee instead
+        // Recalculate fee without change output
+        let size_no_change = estimate_tx_size(utxos.len(), dest_is_confidential, false, false);
+        let base_fee_no_change = calculate_fee_from_size(size_no_change, fee_rate);
+        let actual_fee = total_input.saturating_sub(amount);
 
-    Ok(SpendPreview {
-        source_address: source_address.to_string(),
-        destination: destination.to_string(),
-        amount,
-        fee: actual_fee,
-        change_amount: final_change,
-        has_change,
-        total_input,
-    })
+        // Make sure fee is at least the base fee
+        if actual_fee < base_fee_no_change {
+            return Err(SpendError::InsufficientFunds {
+                available: total_input,
+                required: amount + base_fee_no_change,
+            });
+        }
+
+        Ok(SpendPreview {
+            source_address: source_address.to_string(),
+            destination: destination.to_string(),
+            amount,
+            fee: actual_fee,
+            change_amount: 0,
+            has_change: false,
+            total_input,
+        })
+    }
 }
 
 /// Load and instantiate the p2pkh program with the given `pk_hash`
@@ -360,14 +522,15 @@ pub fn stored_utxo_to_musk_utxo(
     })
 }
 
-/// Build and sign a spending transaction
+/// Build and sign a spending transaction from multiple UTXOs
 ///
-/// This takes a source UTXO, builds a transaction with destination and optional change,
-/// signs it using the derived secret key, and returns the finalized transaction.
+/// This takes multiple source UTXOs, builds a transaction with destination and optional change,
+/// signs each input using the derived secret key, and returns the finalized transaction.
+/// All UTXOs are consumed to prevent address reuse.
 #[allow(clippy::redundant_clone)]
 pub fn build_and_sign_transaction(
     program_path: &str,
-    utxo: &StoredUtxo,
+    utxos: &[StoredUtxo],
     source_script_pubkey: Script,
     source_pk_hash: &[u8; 32],
     mnemonic: &str,
@@ -378,17 +541,23 @@ pub fn build_and_sign_transaction(
     change_amount: u64,
     genesis_hash: elements::BlockHash,
 ) -> Result<elements::Transaction, SpendError> {
+    if utxos.is_empty() {
+        return Err(SpendError::NoUtxos);
+    }
+
     // === VERIFICATION: Prove input == outputs ===
-    let input_amount = utxo.amount;
+    let input_amount: u64 = utxos.iter().map(|u| u.amount).sum();
     let total_outputs = amount + fee + change_amount;
 
     println!("=== TRANSACTION VALUE VERIFICATION ===");
-    println!("  INPUT:  UTXO amount from DB = {input_amount} sats");
+    println!("  INPUTS: {} UTXOs totaling {input_amount} sats", utxos.len());
+    for (i, utxo) in utxos.iter().enumerate() {
+        println!("    [{i}] txid={}:{} amount={}", utxo.txid, utxo.vout, utxo.amount);
+    }
     println!("  OUTPUT: Destination amount  = {amount} sats");
     println!("  OUTPUT: Change amount       = {change_amount} sats");
     println!("  OUTPUT: Fee amount          = {fee} sats");
     println!("  TOTAL:  Sum of outputs      = {total_outputs} sats");
-    println!("  UTXO:   txid={}, vout={}", utxo.txid, utxo.vout);
 
     if input_amount != total_outputs {
         let diff = input_amount.abs_diff(total_outputs);
@@ -403,14 +572,17 @@ pub fn build_and_sign_transaction(
     // 1. Load and instantiate the program
     let program = load_p2pkh_program(program_path, source_pk_hash)?;
 
-    // 2. Convert stored UTXO to musk format
-    let musk_utxo = stored_utxo_to_musk_utxo(utxo, source_script_pubkey)?;
+    // 2. Convert all stored UTXOs to musk format
+    let musk_utxos: Vec<musk::client::Utxo> = utxos
+        .iter()
+        .map(|u| stored_utxo_to_musk_utxo(u, source_script_pubkey.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
 
     // 3. Get asset ID
     let asset_id = get_lbtc_asset_id()?;
 
-    // 4. Create spend builder
-    let mut builder = SpendBuilder::new(program.clone(), musk_utxo).genesis_hash(genesis_hash);
+    // 4. Create spend builder with all UTXOs
+    let mut builder = SpendBuilder::new(program.clone(), musk_utxos).genesis_hash(genesis_hash);
 
     // 5. Add destination output
     builder.add_output_simple(destination_script, amount, asset_id);
@@ -425,41 +597,49 @@ pub fn build_and_sign_transaction(
     // 7. Add fee output
     builder.add_fee(fee, asset_id);
 
-    // 8. Compute sighash
-    let sighash = builder
-        .sighash_all()
-        .map_err(|e| SpendError::SigningError(format!("Failed to compute sighash: {e}")))?;
-
-    // 9. Derive secret key from mnemonic
+    // 8. Derive secret key from mnemonic
     let secret_key = derive_secret_key_from_mnemonic(mnemonic)?;
 
-    // 10. Get the x-only public key
+    // 9. Get the x-only public key
     let pubkey = get_xonly_pubkey(&secret_key)?;
 
-    // 11. Sign the sighash
-    let signature = sign_schnorr_with_bytes(&secret_key, sighash)?;
+    // 10. Sign each input
+    let num_inputs = builder.num_inputs();
+    let mut witness_values_vec = Vec::with_capacity(num_inputs);
 
-    // 12. Build witness values
-    let witness_values = build_witness_values(&pubkey, &signature);
+    for i in 0..num_inputs {
+        // Compute sighash for this input
+        let sighash = builder
+            .sighash_all_for_input(i)
+            .map_err(|e| SpendError::SigningError(format!("Failed to compute sighash for input {i}: {e}")))?;
 
-    // 13. Finalize and return the transaction
+        // Sign this input
+        let signature = sign_schnorr_with_bytes(&secret_key, sighash)?;
+
+        // Build witness values for this input
+        let witness_values = build_witness_values(&pubkey, &signature);
+        witness_values_vec.push(witness_values);
+    }
+
+    // 11. Finalize with all witness values
     builder
-        .finalize(witness_values)
+        .finalize_multi(witness_values_vec)
         .map_err(|e| SpendError::SigningError(format!("Failed to finalize transaction: {e}")))
 }
 
-/// Build and sign a confidential transaction
+/// Build and sign a confidential transaction from multiple UTXOs
 ///
 /// This is used when the destination or change address is confidential.
+/// All UTXOs are consumed to prevent address reuse.
 /// The process is:
 /// 1. Build an unsigned transaction with explicit values
 /// 2. Call rawblindrawtransaction RPC to blind outputs going to confidential addresses
-/// 3. Compute sighash from the blinded transaction
-/// 4. Sign and return the blinded transaction
+/// 3. Compute sighash for each input from the blinded transaction
+/// 4. Sign each input and return the blinded transaction
 #[allow(clippy::too_many_arguments)]
 pub fn build_and_sign_confidential_transaction(
     program_path: &str,
-    utxo: &StoredUtxo,
+    utxos: &[StoredUtxo],
     source_script_pubkey: Script,
     source_pk_hash: &[u8; 32],
     mnemonic: &str,
@@ -473,17 +653,23 @@ pub fn build_and_sign_confidential_transaction(
     genesis_hash: elements::BlockHash,
     rpc_client: &RpcClient,
 ) -> Result<elements::Transaction, SpendError> {
+    if utxos.is_empty() {
+        return Err(SpendError::NoUtxos);
+    }
+
     // === VERIFICATION: Prove input == outputs ===
-    let input_amount = utxo.amount;
+    let input_amount: u64 = utxos.iter().map(|u| u.amount).sum();
     let total_outputs = amount + fee + change_amount;
 
     println!("=== CONFIDENTIAL TRANSACTION VALUE VERIFICATION ===");
-    println!("  INPUT:  UTXO amount from DB = {input_amount} sats");
+    println!("  INPUTS: {} UTXOs totaling {input_amount} sats", utxos.len());
+    for (i, utxo) in utxos.iter().enumerate() {
+        println!("    [{i}] txid={}:{} amount={}", utxo.txid, utxo.vout, utxo.amount);
+    }
     println!("  OUTPUT: Destination amount  = {amount} sats");
     println!("  OUTPUT: Change amount       = {change_amount} sats");
     println!("  OUTPUT: Fee amount          = {fee} sats");
     println!("  TOTAL:  Sum of outputs      = {total_outputs} sats");
-    println!("  UTXO:   txid={}, vout={}", utxo.txid, utxo.vout);
     println!(
         "  Dest is confidential: {}",
         is_confidential_address(&dest_addr.to_string())
@@ -508,15 +694,17 @@ pub fn build_and_sign_confidential_transaction(
     // 1. Load and instantiate the program
     let program = load_p2pkh_program(program_path, source_pk_hash)?;
 
-    // 2. Convert stored UTXO to musk format
-    let musk_utxo = stored_utxo_to_musk_utxo(utxo, source_script_pubkey)?;
+    // 2. Convert all stored UTXOs to musk format
+    let musk_utxos: Vec<musk::client::Utxo> = utxos
+        .iter()
+        .map(|u| stored_utxo_to_musk_utxo(u, source_script_pubkey.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
 
     // 3. Get asset ID
     let asset_id = get_lbtc_asset_id()?;
 
-    // 4. Create spend builder
-    let mut builder =
-        SpendBuilder::new(program.clone(), musk_utxo.clone()).genesis_hash(genesis_hash);
+    // 4. Create spend builder with all UTXOs
+    let mut builder = SpendBuilder::new(program.clone(), musk_utxos).genesis_hash(genesis_hash);
 
     // 5. Add destination output (with nonce for confidential addresses)
     if is_confidential_address(&dest_addr.to_string()) {
@@ -556,27 +744,27 @@ pub fn build_and_sign_confidential_transaction(
     // 7. Add fee output
     builder.add_fee(fee, asset_id);
 
-    // 8. Check if we need to blind
+    // 8. Derive secret key from mnemonic
+    let secret_key = derive_secret_key_from_mnemonic(mnemonic)?;
+
+    // 9. Get the x-only public key
+    let pubkey = get_xonly_pubkey(&secret_key)?;
+
+    // 10. Check if we need to blind
     if builder.needs_blinding() {
         println!("Transaction needs blinding, calling rawblindrawtransaction...");
 
-        // 9. Build unsigned transaction
+        // 11. Build unsigned transaction
         let unsigned_tx = builder.build_unsigned();
 
-        // 10. Get blinding parameters
+        // 12. Get blinding parameters for all inputs
         let blinding_params = builder.get_blinding_params();
-        println!(
-            "  Input amount blinder: {}",
-            blinding_params.input_amount_blinders[0]
-        );
-        println!(
-            "  Input asset blinder: {}",
-            blinding_params.input_asset_blinders[0]
-        );
-        println!("  Input amount: {} sats", blinding_params.input_amounts[0]);
-        println!("  Input asset: {}", blinding_params.input_assets[0]);
+        println!("  Blinding {} inputs:", blinding_params.input_amounts.len());
+        for (i, amt) in blinding_params.input_amounts.iter().enumerate() {
+            println!("    [{i}] amount={amt} sats");
+        }
 
-        // 11. Call rawblindrawtransaction RPC
+        // 13. Call rawblindrawtransaction RPC
         let blinded_tx = rpc_client
             .blind_transaction(
                 &unsigned_tx,
@@ -589,31 +777,31 @@ pub fn build_and_sign_confidential_transaction(
 
         println!("Transaction blinded successfully");
 
-        // 12. Compute sighash from the blinded transaction
-        let sighash = builder
-            .sighash_all_for_blinded(&blinded_tx)
-            .map_err(|e| SpendError::SigningError(format!("Failed to compute sighash: {e}")))?;
+        // 14. Sign each input
+        let num_inputs = builder.num_inputs();
+        let mut satisfied_programs = Vec::with_capacity(num_inputs);
 
-        // 13. Derive secret key from mnemonic
-        let secret_key = derive_secret_key_from_mnemonic(mnemonic)?;
+        for i in 0..num_inputs {
+            // Compute sighash for this input from the blinded transaction
+            let sighash = builder
+                .sighash_all_for_blinded_input(&blinded_tx, i)
+                .map_err(|e| SpendError::SigningError(format!("Failed to compute sighash for input {i}: {e}")))?;
 
-        // 14. Get the x-only public key
-        let pubkey = get_xonly_pubkey(&secret_key)?;
+            // Sign this input
+            let signature = sign_schnorr_with_bytes(&secret_key, sighash)?;
 
-        // 15. Sign the sighash
-        let signature = sign_schnorr_with_bytes(&secret_key, sighash)?;
+            // Build witness values and satisfy the program
+            let witness_values = build_witness_values(&pubkey, &signature);
+            let satisfied = program
+                .satisfy(witness_values)
+                .map_err(|e| SpendError::SigningError(format!("Failed to satisfy program for input {i}: {e}")))?;
+            satisfied_programs.push(satisfied);
+        }
 
-        // 16. Build witness values
-        let witness_values = build_witness_values(&pubkey, &signature);
-
-        // 17. Satisfy the program
-        let satisfied = program
-            .satisfy(witness_values)
-            .map_err(|e| SpendError::SigningError(format!("Failed to satisfy program: {e}")))?;
-
-        // 18. Finalize the blinded transaction with witness
+        // 15. Finalize the blinded transaction with all witnesses
+        let satisfied_refs: Vec<_> = satisfied_programs.iter().collect();
         builder
-            .finalize_blinded(blinded_tx, &satisfied)
+            .finalize_blinded_refs(blinded_tx, &satisfied_refs)
             .map_err(|e| {
                 SpendError::SigningError(format!("Failed to finalize blinded transaction: {e}"))
             })
@@ -621,26 +809,27 @@ pub fn build_and_sign_confidential_transaction(
         // No blinding needed, use regular flow
         println!("No blinding needed, using explicit transaction flow");
 
-        // 8. Compute sighash
-        let sighash = builder
-            .sighash_all()
-            .map_err(|e| SpendError::SigningError(format!("Failed to compute sighash: {e}")))?;
+        // Sign each input
+        let num_inputs = builder.num_inputs();
+        let mut witness_values_vec = Vec::with_capacity(num_inputs);
 
-        // 9. Derive secret key from mnemonic
-        let secret_key = derive_secret_key_from_mnemonic(mnemonic)?;
+        for i in 0..num_inputs {
+            // Compute sighash for this input
+            let sighash = builder
+                .sighash_all_for_input(i)
+                .map_err(|e| SpendError::SigningError(format!("Failed to compute sighash for input {i}: {e}")))?;
 
-        // 10. Get the x-only public key
-        let pubkey = get_xonly_pubkey(&secret_key)?;
+            // Sign this input
+            let signature = sign_schnorr_with_bytes(&secret_key, sighash)?;
 
-        // 11. Sign the sighash
-        let signature = sign_schnorr_with_bytes(&secret_key, sighash)?;
+            // Build witness values for this input
+            let witness_values = build_witness_values(&pubkey, &signature);
+            witness_values_vec.push(witness_values);
+        }
 
-        // 12. Build witness values
-        let witness_values = build_witness_values(&pubkey, &signature);
-
-        // 13. Finalize and return the transaction
+        // Finalize with all witness values
         builder
-            .finalize(witness_values)
+            .finalize_multi(witness_values_vec)
             .map_err(|e| SpendError::SigningError(format!("Failed to finalize transaction: {e}")))
     }
 }
@@ -700,12 +889,13 @@ impl SpendOrchestrator {
     /// Execute a spend operation
     ///
     /// This performs the complete spend workflow:
-    /// 1. Validate inputs
-    /// 2. Calculate preview (fees, change)
-    /// 3. Deploy change address if needed
-    /// 4. Build and sign transaction
-    /// 5. If destination or change is confidential, blind the transaction
-    /// 6. Return the raw transaction hex for broadcasting
+    /// 1. Get fee rate from RPC (or use default)
+    /// 2. Calculate preview (fees, change) using ALL UTXOs
+    /// 3. Build and sign transaction consuming ALL UTXOs
+    /// 4. If destination or change is confidential, blind the transaction
+    /// 5. Return the signed transaction for broadcasting
+    ///
+    /// All UTXOs are consumed in the transaction to prevent address reuse.
     pub fn execute_spend(
         &self,
         source_address: &str,
@@ -717,11 +907,30 @@ impl SpendOrchestrator {
         amount: u64,
         change_address: Option<&str>,
     ) -> Result<(elements::Transaction, SpendPreview), SpendError> {
-        // 1. Calculate spend preview
-        let preview = calculate_spend_preview(source_address, destination, amount, utxos)?;
+        // 1. Get fee rate from RPC (if available)
+        let fee_rate = self
+            .rpc_client
+            .as_ref()
+            .and_then(|c| c.estimate_smart_fee(6).ok().flatten())
+            .unwrap_or(DEFAULT_FEE_RATE_SAT_PER_KB);
 
-        // 2. Use only the first UTXO for now (simplicity - can expand later)
-        let utxo = &utxos[0];
+        println!("Using fee rate: {} sat/kB", fee_rate);
+
+        // 2. Calculate spend preview using ALL UTXOs
+        let preview = calculate_spend_preview_with_fee_rate(
+            source_address,
+            destination,
+            amount,
+            utxos,
+            Some(fee_rate),
+            change_address,
+        )?;
+
+        println!(
+            "Spending {} UTXOs totaling {} sats",
+            utxos.len(),
+            preview.total_input
+        );
 
         // 3. Parse destination address
         let dest_addr = parse_address(destination, self.address_params)?;
@@ -746,7 +955,7 @@ impl SpendOrchestrator {
         let change_is_confidential = change_address.map_or(false, is_confidential_address);
         let needs_blinding = dest_is_confidential || change_is_confidential;
 
-        // 6. Build and sign the transaction (with optional blinding)
+        // 6. Build and sign the transaction using ALL UTXOs (with optional blinding)
         let tx = if needs_blinding {
             // For confidential outputs, we need the RPC client to blind
             let rpc_client = self.rpc_client.as_ref().ok_or_else(|| {
@@ -757,7 +966,7 @@ impl SpendOrchestrator {
 
             build_and_sign_confidential_transaction(
                 &self.program_path,
-                utxo,
+                utxos, // All UTXOs
                 source_script_pubkey.clone(),
                 source_pk_hash,
                 mnemonic,
@@ -777,7 +986,7 @@ impl SpendOrchestrator {
             // Explicit transaction - no blinding needed
             build_and_sign_transaction(
                 &self.program_path,
-                utxo,
+                utxos, // All UTXOs
                 source_script_pubkey.clone(),
                 source_pk_hash,
                 mnemonic,

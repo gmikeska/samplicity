@@ -198,7 +198,7 @@ fn test_scenario_1_explicit_to_explicit() {
 
     let tx = build_and_sign_transaction(
         P2PKH_PROGRAM_PATH,
-        &utxos[0],
+        &utxos[..1], // Use first UTXO only for this test
         source_script,
         &pk_hash_bytes,
         &mnemonic,
@@ -315,7 +315,7 @@ fn test_scenario_2_explicit_to_confidential() {
 
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
-        &utxos[0],
+        &utxos[..1], // Use first UTXO only for this test
         source_script,
         &pk_hash_bytes,
         &mnemonic,
@@ -442,7 +442,7 @@ fn test_scenario_3_confidential_to_explicit() {
 
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
-        &utxos[0],
+        &utxos[..1],
         source_script,
         &pk_hash_bytes,
         &mnemonic,
@@ -572,7 +572,7 @@ fn test_scenario_4_confidential_to_confidential() {
 
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
-        &utxos[0],
+        &utxos[..1],
         source_script,
         &pk_hash_bytes,
         &mnemonic,
@@ -697,7 +697,7 @@ fn test_scenario_5_confidential_with_blinded_change() {
 
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
-        &utxos[0],
+        &utxos[..1],
         source_script,
         &pk_hash_bytes,
         &mnemonic,
@@ -1075,4 +1075,139 @@ fn test_funded_addresses_have_utxos_with_blinding_data() {
     );
 
     println!("\n✅ Funded confidential address has proper blinding data");
+}
+
+// ============================================================================
+// Scenario 6: Multi-UTXO Spending (address draining)
+// ============================================================================
+
+/// Test that spending from an address with multiple UTXOs consumes ALL UTXOs
+/// This is important for privacy (no address reuse) and dust consolidation
+#[test]
+#[ignore = "requires live Elements node and address with multiple UTXOs"]
+#[serial]
+fn test_scenario_6_multi_utxo_spending() {
+    println!("\n=== SCENARIO 6: Multi-UTXO Spending ===\n");
+
+    // This test requires the address:
+    // tlq1pqd2c9c085t6du9dq940vnsh3cvxp5965r7ze6vtrjvxjh6s4e8ch9qy09vyn9zthmrn5tall466jy6phh9js6u56kh3drjhr34vwlk223mahga7vl7wr
+    // Which has 2 UTXOs: 100,000 sats and 1,000 sats
+    // This address is in the dev database, not test database
+
+    let mut client = create_rpc_client();
+
+    // Open the dev database to access the multi-UTXO address
+    let db_path = std::path::Path::new("samplicity-dev.db");
+    if !db_path.exists() {
+        println!("⚠️  Skipping test - samplicity-dev.db not found");
+        return;
+    }
+
+    let db = samplicity::db::Database::open(db_path.to_str().unwrap())
+        .expect("Failed to open database");
+
+    // The multi-UTXO confidential address
+    let source_address = "tlq1pqd2c9c085t6du9dq940vnsh3cvxp5965r7ze6vtrjvxjh6s4e8ch9qy09vyn9zthmrn5tall466jy6phh9js6u56kh3drjhr34vwlk223mahga7vl7wr";
+
+    // Get address info and UTXOs from database
+    let (source_addr_info, utxos) = get_address_with_utxos(&db, source_address);
+
+    if utxos.len() < 2 {
+        println!("⚠️  Skipping test - need at least 2 UTXOs, found {}", utxos.len());
+        return;
+    }
+
+    println!("Found {} UTXOs on source address:", utxos.len());
+    let total_input: u64 = utxos.iter().map(|u| u.amount).sum();
+    for (i, utxo) in utxos.iter().enumerate() {
+        println!("  [{i}] txid={}:{} amount={} sats", utxo.txid, utxo.vout, utxo.amount);
+    }
+    println!("  Total: {total_input} sats");
+
+    // Get pk_hash and mnemonic
+    let pk_hash_bytes = get_pk_hash_bytes(&source_addr_info);
+    let mnemonic = get_mnemonic_for_address(&db, source_address);
+
+    // Destination: explicit address from the test environment
+    let dest_address = test_addresses::EXPLICIT_EMPTY;
+
+    // Use SpendOrchestrator which should use ALL UTXOs
+    let source_addr = musk::elements::Address::from_str(source_address).unwrap();
+    let source_script = source_addr.script_pubkey();
+
+    let genesis_hash = client.genesis_hash().expect("Failed to get genesis hash");
+    let address_params = &musk::elements::AddressParams::LIQUID_TESTNET;
+
+    // Deploy a change address (confidential to match source)
+    let change_address = deploy_address_with_type(address_params, AddressType::Confidential);
+
+    // Create RPC client Arc for blinding
+    let rpc_client = Arc::new(create_rpc_client());
+
+    let orchestrator = SpendOrchestrator::new(P2PKH_PROGRAM_PATH, address_params, genesis_hash)
+        .with_rpc_client(rpc_client);
+
+    // Send small amount so change is generated
+    let send_amount = 1000_u64; // 1000 sats
+
+    let result = orchestrator.execute_spend(
+        source_address,
+        &source_script,
+        &pk_hash_bytes,
+        &mnemonic,
+        &utxos, // Pass ALL UTXOs
+        dest_address,
+        send_amount,
+        Some(&change_address),
+    );
+
+    assert!(result.is_ok(), "Multi-UTXO spend should succeed: {:?}", result.err());
+    let (tx, preview) = result.unwrap();
+
+    // Verify ALL UTXOs were consumed
+    assert_eq!(
+        tx.input.len(),
+        utxos.len(),
+        "Transaction should have {} inputs (one per UTXO), got {}",
+        utxos.len(),
+        tx.input.len()
+    );
+
+    // Verify total input matches sum of all UTXOs
+    assert_eq!(
+        preview.total_input,
+        total_input,
+        "Preview total_input should match sum of all UTXOs"
+    );
+
+    // Verify transaction structure
+    println!("\nTransaction structure:");
+    println!("  Inputs: {}", tx.input.len());
+    println!("  Outputs: {}", tx.output.len());
+    println!("  Preview: send={} fee={} change={}", preview.amount, preview.fee, preview.change_amount);
+
+    // Test mempool accept
+    let tx_hex = transaction_to_hex(&tx);
+    let mempool_result = client
+        .test_mempool_accept(&tx_hex)
+        .expect("Failed to call testmempoolaccept");
+
+    let allowed = mempool_result
+        .first()
+        .and_then(|r| r.get("allowed"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    if !allowed {
+        let reason = mempool_result
+            .first()
+            .and_then(|r| r.get("reject-reason"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        panic!("Multi-UTXO transaction rejected: {reason}");
+    }
+
+    println!("\n✅ SCENARIO 6 PASSED: Multi-UTXO Spending");
+    println!("   All {} UTXOs consumed in single transaction", utxos.len());
+    println!("   Transaction accepted by mempool (not broadcast)");
 }
