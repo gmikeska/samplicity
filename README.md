@@ -151,7 +151,9 @@ To add a new Simplicity contract:
 
 ## The musk.conf File
 
-The `musk.conf` file configures the connection to your Elements/Liquid node. It uses TOML syntax with three main sections:
+The `musk.conf` file configures the connection to your Elements/Liquid node. It uses TOML syntax with three main sections.
+
+> **⚠️ Note:** In production projects, `musk.conf` should be added to `.gitignore` since it contains RPC credentials. It is included in this repository as an example implementation to demonstrate the configuration format and required fields. For your own projects, use `musk.conf.example` as a template and create `musk.conf` locally.
 
 ### Configuration Reference
 
