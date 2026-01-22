@@ -511,10 +511,8 @@ impl Database {
         }
 
         // Remove UTXOs that are no longer present
-        let keep_list: Vec<(String, u32)> = utxos
-            .iter()
-            .map(|u| (u.txid.clone(), u.vout))
-            .collect();
+        let keep_list: Vec<(String, u32)> =
+            utxos.iter().map(|u| (u.txid.clone(), u.vout)).collect();
         self.remove_utxos_not_in_list(address_id, &keep_list)?;
 
         Ok(())
@@ -535,7 +533,9 @@ impl Database {
 
         // Upsert each UTXO (without blinding data)
         for (txid, vout, amount, asset) in utxos {
-            self.upsert_utxo(address_id, txid, *vout, *amount, asset, None, None, None, None)?;
+            self.upsert_utxo(
+                address_id, txid, *vout, *amount, asset, None, None, None, None,
+            )?;
         }
 
         // Remove UTXOs that are no longer present

@@ -18,7 +18,8 @@ fn test_get_pubkey_for_address() {
     let mnemonic = "test mnemonic phrase words";
 
     let pubkey_id = db.insert_pubkey(&pubkey, pk_hash, mnemonic).unwrap();
-    db.insert_address("test_addr", pubkey_id, &pubkey, None).unwrap();
+    db.insert_address("test_addr", pubkey_id, &pubkey, None)
+        .unwrap();
 
     // Retrieve pubkey for address
     let stored_pubkey = db.get_pubkey_for_address("test_addr").unwrap();
@@ -47,7 +48,8 @@ fn test_delete_address() {
     let addr_id = db
         .insert_address("addr_to_delete", pubkey_id, &[2u8; 32], None)
         .unwrap();
-    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc", None, None, None, None).unwrap();
+    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc", None, None, None, None)
+        .unwrap();
 
     // Verify address exists
     let addr = db.get_address("addr_to_delete").unwrap();
@@ -82,8 +84,10 @@ fn test_delete_address_preserves_shared_pubkey() {
     let pubkey_id = db
         .insert_pubkey(&[1u8; 32], "shared_hash", "shared_mnemonic")
         .unwrap();
-    db.insert_address("addr1", pubkey_id, &[2u8; 32], None).unwrap();
-    db.insert_address("addr2", pubkey_id, &[3u8; 32], None).unwrap();
+    db.insert_address("addr1", pubkey_id, &[2u8; 32], None)
+        .unwrap();
+    db.insert_address("addr2", pubkey_id, &[3u8; 32], None)
+        .unwrap();
 
     // Delete first address
     let deleted = db.delete_address("addr1").unwrap();
@@ -127,8 +131,10 @@ fn test_get_unspent_utxos_by_id() {
         .unwrap();
 
     // Insert UTXOs
-    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc", None, None, None, None).unwrap();
-    db.upsert_utxo(addr_id, "txid2", 1, 50000, "lbtc", None, None, None, None).unwrap();
+    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc", None, None, None, None)
+        .unwrap();
+    db.upsert_utxo(addr_id, "txid2", 1, 50000, "lbtc", None, None, None, None)
+        .unwrap();
 
     // Get UTXOs by address ID
     let utxos = db.get_unspent_utxos_by_id(addr_id).unwrap();
@@ -146,8 +152,10 @@ fn test_remove_utxos_empty_keep_list() {
         .unwrap();
 
     // Insert UTXOs
-    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc", None, None, None, None).unwrap();
-    db.upsert_utxo(addr_id, "txid2", 1, 50000, "lbtc", None, None, None, None).unwrap();
+    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc", None, None, None, None)
+        .unwrap();
+    db.upsert_utxo(addr_id, "txid2", 1, 50000, "lbtc", None, None, None, None)
+        .unwrap();
 
     // Remove all UTXOs by passing empty keep list
     let removed = db.remove_utxos_not_in_list(addr_id, &[]).unwrap();
@@ -172,7 +180,9 @@ fn test_insert_and_retrieve() {
     let address = "tlq1ptest123";
     let witness_pk = vec![2u8; 32];
 
-    let addr_id = db.insert_address(address, pubkey_id, &witness_pk, None).unwrap();
+    let addr_id = db
+        .insert_address(address, pubkey_id, &witness_pk, None)
+        .unwrap();
     assert!(addr_id > 0);
 
     let addresses = db.get_all_addresses().unwrap();
@@ -186,7 +196,8 @@ fn test_balance_update() {
     let db = Database::open_in_memory().unwrap();
 
     let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash", "mnemonic").unwrap();
-    db.insert_address("addr1", pubkey_id, &[2u8; 32], None).unwrap();
+    db.insert_address("addr1", pubkey_id, &[2u8; 32], None)
+        .unwrap();
 
     // Initial balance is 0
     let addr = db.get_address("addr1").unwrap().unwrap();
@@ -211,13 +222,35 @@ fn test_utxo_operations() {
 
     // Create address
     let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash", "mnemonic").unwrap();
-    let addr_id = db.insert_address("addr1", pubkey_id, &[2u8; 32], None).unwrap();
+    let addr_id = db
+        .insert_address("addr1", pubkey_id, &[2u8; 32], None)
+        .unwrap();
 
     // Insert UTXOs
-    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc_asset", None, None, None, None)
-        .unwrap();
-    db.upsert_utxo(addr_id, "txid2", 1, 50000, "lbtc_asset", None, None, None, None)
-        .unwrap();
+    db.upsert_utxo(
+        addr_id,
+        "txid1",
+        0,
+        100_000,
+        "lbtc_asset",
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    db.upsert_utxo(
+        addr_id,
+        "txid2",
+        1,
+        50000,
+        "lbtc_asset",
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Get unspent UTXOs
     let utxos = db.get_unspent_utxos("addr1").unwrap();
@@ -240,12 +273,19 @@ fn test_blinding_sk_storage_and_retrieval() {
 
     // Create address without blinding key (explicit address)
     let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash1", "mnemonic1").unwrap();
-    db.insert_address("explicit_addr", pubkey_id, &[2u8; 32], None).unwrap();
+    db.insert_address("explicit_addr", pubkey_id, &[2u8; 32], None)
+        .unwrap();
 
     // Create address with blinding key (confidential address)
     let blinding_sk = [3u8; 32];
     let pubkey_id2 = db.insert_pubkey(&[4u8; 32], "hash2", "mnemonic2").unwrap();
-    db.insert_address("confidential_addr", pubkey_id2, &[5u8; 32], Some(&blinding_sk)).unwrap();
+    db.insert_address(
+        "confidential_addr",
+        pubkey_id2,
+        &[5u8; 32],
+        Some(&blinding_sk),
+    )
+    .unwrap();
 
     // Verify explicit address has no blinding key
     let result = db.get_blinding_sk("explicit_addr").unwrap();
@@ -267,7 +307,8 @@ fn test_utxo_sync() {
 
     // Create address
     let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash", "mnemonic").unwrap();
-    db.insert_address("addr1", pubkey_id, &[2u8; 32], None).unwrap();
+    db.insert_address("addr1", pubkey_id, &[2u8; 32], None)
+        .unwrap();
 
     // Initial sync
     let utxos = vec![

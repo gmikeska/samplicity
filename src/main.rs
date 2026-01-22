@@ -76,10 +76,12 @@ async fn deploy_address(
                 Ok(pubkey_id) => {
                     // For confidential addresses, pass the blinding secret key
                     let blinding_sk_slice = deployed.blinding_sk.as_ref().map(|sk| sk.as_slice());
-                    match state
-                        .db
-                        .insert_address(&deployed.address, pubkey_id, &deployed.pubkey, blinding_sk_slice)
-                    {
+                    match state.db.insert_address(
+                        &deployed.address,
+                        pubkey_id,
+                        &deployed.pubkey,
+                        blinding_sk_slice,
+                    ) {
                         Ok(_) => {
                             // Import address to Elements wallet for UTXO tracking
                             // Use rescan=false for speed (new addresses won't have history)
@@ -98,10 +100,10 @@ async fn deploy_address(
                             // This is required for the wallet to unblind outputs
                             if let Some(blinding_sk) = &deployed.blinding_sk {
                                 let blinding_key_hex = hex::encode(blinding_sk);
-                                if let Err(e) = state.rpc_client.import_blinding_key(
-                                    &deployed.address,
-                                    &blinding_key_hex,
-                                ) {
+                                if let Err(e) = state
+                                    .rpc_client
+                                    .import_blinding_key(&deployed.address, &blinding_key_hex)
+                                {
                                     eprintln!("Warning: Failed to import blinding key: {e}");
                                 } else {
                                     println!("Imported blinding key for confidential address");
@@ -428,7 +430,8 @@ fn create_spend_confirm_callback(
                     )
                     .map_err(|e| format!("Failed to store change pubkey: {e}"))?;
 
-                let blinding_sk_slice = change_deployed.blinding_sk.as_ref().map(|sk| sk.as_slice());
+                let blinding_sk_slice =
+                    change_deployed.blinding_sk.as_ref().map(|sk| sk.as_slice());
                 db.insert_address(
                     &change_deployed.address,
                     change_pubkey_id,
@@ -448,10 +451,9 @@ fn create_spend_confirm_callback(
                 // For confidential change addresses, also import the blinding key
                 if let Some(blinding_sk) = &change_deployed.blinding_sk {
                     let blinding_key_hex = hex::encode(blinding_sk);
-                    if let Err(e) = rpc_client.import_blinding_key(
-                        &change_deployed.address,
-                        &blinding_key_hex,
-                    ) {
+                    if let Err(e) =
+                        rpc_client.import_blinding_key(&change_deployed.address, &blinding_key_hex)
+                    {
                         eprintln!("Warning: Failed to import change address blinding key: {e}");
                     } else {
                         println!("Imported blinding key for confidential change address");
@@ -580,7 +582,10 @@ async fn main() -> std::io::Result<()> {
             if let Ok(Some(blinding_sk)) = db.get_blinding_sk(&addr.address) {
                 let blinding_key_hex = hex::encode(&blinding_sk);
                 if let Err(e) = rpc_client.import_blinding_key(&addr.address, &blinding_key_hex) {
-                    eprintln!("  Warning: Failed to import blinding key for {}: {e}", &addr.address[..20]);
+                    eprintln!(
+                        "  Warning: Failed to import blinding key for {}: {e}",
+                        &addr.address[..20]
+                    );
                 }
             }
         }

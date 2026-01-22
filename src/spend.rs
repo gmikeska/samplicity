@@ -76,7 +76,9 @@ impl std::fmt::Display for SpendError {
             Self::BroadcastError(msg) => write!(f, "Broadcast error: {msg}"),
             Self::DatabaseError(msg) => write!(f, "Database error: {msg}"),
             Self::GenesisHashError(msg) => write!(f, "Genesis hash error: {msg}"),
-            Self::ConfidentialNotSupported(msg) => write!(f, "Confidential spending not yet supported: {msg}"),
+            Self::ConfidentialNotSupported(msg) => {
+                write!(f, "Confidential spending not yet supported: {msg}")
+            }
         }
     }
 }
@@ -482,9 +484,15 @@ pub fn build_and_sign_confidential_transaction(
     println!("  OUTPUT: Fee amount          = {fee} sats");
     println!("  TOTAL:  Sum of outputs      = {total_outputs} sats");
     println!("  UTXO:   txid={}, vout={}", utxo.txid, utxo.vout);
-    println!("  Dest is confidential: {}", is_confidential_address(&dest_addr.to_string()));
+    println!(
+        "  Dest is confidential: {}",
+        is_confidential_address(&dest_addr.to_string())
+    );
     if let Some(change) = &change_addr {
-        println!("  Change is confidential: {}", is_confidential_address(&change.to_string()));
+        println!(
+            "  Change is confidential: {}",
+            is_confidential_address(&change.to_string())
+        );
     }
 
     if input_amount != total_outputs {
@@ -507,14 +515,15 @@ pub fn build_and_sign_confidential_transaction(
     let asset_id = get_lbtc_asset_id()?;
 
     // 4. Create spend builder
-    let mut builder = SpendBuilder::new(program.clone(), musk_utxo.clone()).genesis_hash(genesis_hash);
+    let mut builder =
+        SpendBuilder::new(program.clone(), musk_utxo.clone()).genesis_hash(genesis_hash);
 
     // 5. Add destination output (with nonce for confidential addresses)
     if is_confidential_address(&dest_addr.to_string()) {
         // Get the blinding pubkey from the confidential address
         let blinding_key = dest_addr.blinding_pubkey.ok_or_else(|| {
             SpendError::ConfidentialNotSupported(
-                "Confidential address missing blinding pubkey".to_string()
+                "Confidential address missing blinding pubkey".to_string(),
             )
         })?;
         let nonce = musk::elements::confidential::Nonce::Confidential(blinding_key);
@@ -530,7 +539,7 @@ pub fn build_and_sign_confidential_transaction(
                 if is_confidential_address(&change_a.to_string()) {
                     let blinding_key = change_a.blinding_pubkey.ok_or_else(|| {
                         SpendError::ConfidentialNotSupported(
-                            "Change confidential address missing blinding pubkey".to_string()
+                            "Change confidential address missing blinding pubkey".to_string(),
                         )
                     })?;
                     let nonce = musk::elements::confidential::Nonce::Confidential(blinding_key);
@@ -556,19 +565,27 @@ pub fn build_and_sign_confidential_transaction(
 
         // 10. Get blinding parameters
         let blinding_params = builder.get_blinding_params();
-        println!("  Input amount blinder: {}", blinding_params.input_amount_blinders[0]);
-        println!("  Input asset blinder: {}", blinding_params.input_asset_blinders[0]);
+        println!(
+            "  Input amount blinder: {}",
+            blinding_params.input_amount_blinders[0]
+        );
+        println!(
+            "  Input asset blinder: {}",
+            blinding_params.input_asset_blinders[0]
+        );
         println!("  Input amount: {} sats", blinding_params.input_amounts[0]);
         println!("  Input asset: {}", blinding_params.input_assets[0]);
 
         // 11. Call rawblindrawtransaction RPC
-        let blinded_tx = rpc_client.blind_transaction(
-            &unsigned_tx,
-            &blinding_params.input_amount_blinders,
-            &blinding_params.input_amounts,
-            &blinding_params.input_assets,
-            &blinding_params.input_asset_blinders,
-        ).map_err(|e| SpendError::BroadcastError(format!("Failed to blind transaction: {e}")))?;
+        let blinded_tx = rpc_client
+            .blind_transaction(
+                &unsigned_tx,
+                &blinding_params.input_amount_blinders,
+                &blinding_params.input_amounts,
+                &blinding_params.input_assets,
+                &blinding_params.input_asset_blinders,
+            )
+            .map_err(|e| SpendError::BroadcastError(format!("Failed to blind transaction: {e}")))?;
 
         println!("Transaction blinded successfully");
 
@@ -590,13 +607,16 @@ pub fn build_and_sign_confidential_transaction(
         let witness_values = build_witness_values(&pubkey, &signature);
 
         // 17. Satisfy the program
-        let satisfied = program.satisfy(witness_values)
+        let satisfied = program
+            .satisfy(witness_values)
             .map_err(|e| SpendError::SigningError(format!("Failed to satisfy program: {e}")))?;
 
         // 18. Finalize the blinded transaction with witness
         builder
             .finalize_blinded(blinded_tx, &satisfied)
-            .map_err(|e| SpendError::SigningError(format!("Failed to finalize blinded transaction: {e}")))
+            .map_err(|e| {
+                SpendError::SigningError(format!("Failed to finalize blinded transaction: {e}"))
+            })
     } else {
         // No blinding needed, use regular flow
         println!("No blinding needed, using explicit transaction flow");
@@ -731,7 +751,7 @@ impl SpendOrchestrator {
             // For confidential outputs, we need the RPC client to blind
             let rpc_client = self.rpc_client.as_ref().ok_or_else(|| {
                 SpendError::ConfidentialNotSupported(
-                    "RPC client required for confidential transactions".to_string()
+                    "RPC client required for confidential transactions".to_string(),
                 )
             })?;
 
@@ -745,7 +765,9 @@ impl SpendOrchestrator {
                 dest_script,
                 amount,
                 preview.fee,
-                change_address.map(|a| parse_address(a, self.address_params)).transpose()?,
+                change_address
+                    .map(|a| parse_address(a, self.address_params))
+                    .transpose()?,
                 change_script,
                 preview.change_amount,
                 self.genesis_hash,

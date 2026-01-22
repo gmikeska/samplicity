@@ -194,7 +194,9 @@ fn test_spend_error_display() {
     assert!(program_err.to_string().contains("Program error"));
 
     let confidential_err = SpendError::ConfidentialNotSupported("test reason".to_string());
-    assert!(confidential_err.to_string().contains("Confidential spending not yet supported"));
+    assert!(confidential_err
+        .to_string()
+        .contains("Confidential spending not yet supported"));
     assert!(confidential_err.to_string().contains("test reason"));
 }
 
@@ -204,16 +206,18 @@ fn test_is_confidential_address() {
 
     // Testnet confidential addresses start with "tlq"
     assert!(is_confidential_address("tlq1pqgked3uaq994tup3ef9nmsh7nvscvxsv27qqz0e3jpjf9epfhp8uuw2dq2wl6ueld8vd2gjcecqznjhheq8nvg0k5trjjjl90w34fl5g8jvwccx4hes5"));
-    
+
     // Mainnet confidential addresses start with "lq"
     assert!(is_confidential_address("lq1qqexample"));
-    
+
     // Testnet explicit addresses start with "tex"
-    assert!(!is_confidential_address("tex1pksj0z78nxz6cjcv20t8hev3hvx3qd35wc8h80rhw845t3574nfds8jnwq4"));
-    
+    assert!(!is_confidential_address(
+        "tex1pksj0z78nxz6cjcv20t8hev3hvx3qd35wc8h80rhw845t3574nfds8jnwq4"
+    ));
+
     // Mainnet explicit addresses start with "ex"
     assert!(!is_confidential_address("ex1qexample"));
-    
+
     // Other prefixes are not confidential
     assert!(!is_confidential_address("ert1qexample")); // regtest
 }

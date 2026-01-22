@@ -93,9 +93,7 @@ fn get_address_with_utxos(
         .expect("Failed to query address")
         .unwrap_or_else(|| panic!("Address not found in test database: {address}"));
 
-    let utxos = db
-        .get_unspent_utxos(address)
-        .expect("Failed to get UTXOs");
+    let utxos = db.get_unspent_utxos(address).expect("Failed to get UTXOs");
 
     (addr_info, utxos)
 }
@@ -311,9 +309,9 @@ fn test_scenario_2_explicit_to_confidential() {
             .unwrap()
             .script_pubkey()
     });
-    let change_addr_parsed = change_address.as_ref().map(|addr| {
-        musk::elements::Address::from_str(addr).unwrap()
-    });
+    let change_addr_parsed = change_address
+        .as_ref()
+        .map(|addr| musk::elements::Address::from_str(addr).unwrap());
 
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
@@ -438,9 +436,9 @@ fn test_scenario_3_confidential_to_explicit() {
             .script_pubkey()
     });
 
-    let change_addr_parsed = change_address.as_ref().map(|addr| {
-        musk::elements::Address::from_str(addr).unwrap()
-    });
+    let change_addr_parsed = change_address
+        .as_ref()
+        .map(|addr| musk::elements::Address::from_str(addr).unwrap());
 
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
@@ -568,9 +566,9 @@ fn test_scenario_4_confidential_to_confidential() {
             .script_pubkey()
     });
 
-    let change_addr_parsed = change_address.as_ref().map(|addr| {
-        musk::elements::Address::from_str(addr).unwrap()
-    });
+    let change_addr_parsed = change_address
+        .as_ref()
+        .map(|addr| musk::elements::Address::from_str(addr).unwrap());
 
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
@@ -669,9 +667,8 @@ fn test_scenario_5_confidential_with_blinded_change() {
     println!("Destination (EX): {dest_address}");
 
     // Calculate preview
-    let preview =
-        calculate_spend_preview(source_address, dest_address, send_amount, &utxos[..1])
-            .expect("Failed to calculate preview");
+    let preview = calculate_spend_preview(source_address, dest_address, send_amount, &utxos[..1])
+        .expect("Failed to calculate preview");
 
     assert!(
         preview.has_change,
@@ -736,7 +733,9 @@ fn test_scenario_5_confidential_with_blinded_change() {
     for (i, output) in vout.iter().enumerate() {
         let value = output.get("value");
         let value_str = match value {
-            Some(serde_json::Value::Number(n)) => format!("{} sats", (n.as_f64().unwrap() * 1e8) as u64),
+            Some(serde_json::Value::Number(n)) => {
+                format!("{} sats", (n.as_f64().unwrap() * 1e8) as u64)
+            }
             Some(serde_json::Value::String(s)) if s.contains("commitment") => "BLINDED".to_string(),
             _ => "unknown".to_string(),
         };
@@ -924,7 +923,8 @@ fn test_spend_orchestrator_handles_all_address_types() {
                 SpendOrchestrator::new(P2PKH_PROGRAM_PATH, address_params, genesis_hash)
                     .with_rpc_client(rpc_client.clone());
 
-            let change_address = deploy_address_with_type(address_params, AddressType::Confidential);
+            let change_address =
+                deploy_address_with_type(address_params, AddressType::Confidential);
 
             let result = orchestrator.execute_spend(
                 source_address,
@@ -1030,7 +1030,9 @@ fn test_confidential_addresses_have_blinding_keys() {
     ];
 
     for addr in &confidential_addresses {
-        let blinding_sk = db.get_blinding_sk(addr).expect("Failed to query blinding key");
+        let blinding_sk = db
+            .get_blinding_sk(addr)
+            .expect("Failed to query blinding key");
         assert!(
             blinding_sk.is_some(),
             "Confidential address missing blinding key: {}",
@@ -1052,10 +1054,16 @@ fn test_funded_addresses_have_utxos_with_blinding_data() {
     let addr = test_addresses::CONFIDENTIAL_FUNDED;
     let utxos = db.get_unspent_utxos(addr).expect("Failed to get UTXOs");
 
-    assert!(!utxos.is_empty(), "No UTXOs for funded confidential address");
+    assert!(
+        !utxos.is_empty(),
+        "No UTXOs for funded confidential address"
+    );
 
     let utxo = &utxos[0];
-    println!("UTXO: txid={}, vout={}, amount={}", utxo.txid, utxo.vout, utxo.amount);
+    println!(
+        "UTXO: txid={}, vout={}, amount={}",
+        utxo.txid, utxo.vout, utxo.amount
+    );
     println!("  amount_blinder: {}", utxo.amount_blinder.is_some());
     println!("  asset_blinder: {}", utxo.asset_blinder.is_some());
     println!("  amount_commitment: {}", utxo.amount_commitment.is_some());
