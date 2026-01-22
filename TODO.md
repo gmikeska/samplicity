@@ -1,5 +1,5 @@
 - We need to make spend move all the coins instead of just the most valuable
-    - This will require some changes to musk as well
+    - This may require some changes to musk as well
 - We need to add confidential transaction support and use confidential transactions whenever confidental addresses are used.
     - This will require some changes to musk as well
 - Write a robust readme that gives a tour of the muskfile and the musk directory (where programs go)
