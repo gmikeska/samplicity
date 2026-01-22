@@ -2,6 +2,10 @@
 //!
 //! Handles real-time communication between frontend and backend.
 
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::future_not_send)] // actix-web handlers are not Send
+#![allow(clippy::unused_async)] // actix-web requires async handlers
+
 use actix::{Actor, ActorContext, Addr, AsyncContext, Handler, Message, StreamHandler};
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
@@ -113,6 +117,7 @@ pub struct WsSession {
 }
 
 impl WsSession {
+    #[must_use]
     pub fn new(db: Database, broadcaster: Option<Addr<WsBroadcaster>>) -> Self {
         Self {
             id: rand_id(),
@@ -123,7 +128,7 @@ impl WsSession {
     }
 
     /// Helper method that sends heartbeat ping to client every second
-    fn hb(&self, ctx: &mut <Self as Actor>::Context) {
+    fn hb(ctx: &mut <Self as Actor>::Context) {
         ctx.run_interval(HEARTBEAT_INTERVAL, |act, ctx| {
             // Check client heartbeats
             if Instant::now().duration_since(act.hb) > CLIENT_TIMEOUT {
@@ -149,7 +154,7 @@ impl WsSession {
             }
             Err(e) => {
                 let msg = ServerMessage::Error {
-                    message: format!("Failed to get addresses: {}", e),
+                    message: format!("Failed to get addresses: {e}"),
                 };
                 if let Ok(json) = serde_json::to_string(&msg) {
                     ctx.text(json);
@@ -164,7 +169,7 @@ impl Actor for WsSession {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         // Start the heartbeat process
-        self.hb(ctx);
+        Self::hb(ctx);
 
         // Send initial address list
         self.send_address_list(ctx);
@@ -258,7 +263,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
                             }
                             Err(e) => {
                                 let msg = ServerMessage::Error {
-                                    message: format!("Failed to delete address: {}", e),
+                                    message: format!("Failed to delete address: {e}"),
                                 };
                                 if let Ok(json) = serde_json::to_string(&msg) {
                                     ctx.text(json);
@@ -268,7 +273,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
                     }
                     Err(e) => {
                         let msg = ServerMessage::Error {
-                            message: format!("Invalid message: {}", e),
+                            message: format!("Invalid message: {e}"),
                         };
                         if let Ok(json) = serde_json::to_string(&msg) {
                             ctx.text(json);
@@ -309,6 +314,7 @@ pub struct RegisterSession {
 /// Message to unregister a session
 #[derive(Message)]
 #[rtype(result = "()")]
+#[allow(dead_code)] // id reserved for proper session management
 pub struct UnregisterSession {
     pub id: usize,
 }
@@ -338,7 +344,7 @@ pub struct SpendConfirmRequest {
     pub reply_to: Addr<WsSession>,
 }
 
-/// SpendPreview struct for websocket responses (mirrors spend::SpendPreview)
+/// `SpendPreview` struct for websocket responses (mirrors `spend::SpendPreview`)
 #[derive(Debug, Clone, Serialize)]
 pub struct SpendPreviewData {
     pub source_address: String,
@@ -354,7 +360,7 @@ pub struct SpendPreviewData {
 pub type SpendPreviewCallback =
     Box<dyn Fn(String, String, u64) -> Option<SpendPreviewData> + Send + Sync>;
 
-/// Callback type for spend confirm requests  
+/// Callback type for spend confirm requests
 pub type SpendConfirmCallback = Box<
     dyn Fn(String, String, u64) -> Result<(String, Option<String>, Option<u64>, u64), String>
         + Send
@@ -362,6 +368,7 @@ pub type SpendConfirmCallback = Box<
 >;
 
 /// Broadcaster actor that manages all WebSocket sessions
+#[derive(Default)]
 pub struct WsBroadcaster {
     sessions: Vec<Addr<WsSession>>,
     deploy_callback: Option<Box<dyn Fn() + Send + Sync>>,
@@ -370,15 +377,13 @@ pub struct WsBroadcaster {
 }
 
 impl WsBroadcaster {
+    #[must_use]
     pub fn new() -> Self {
-        Self {
-            sessions: Vec::new(),
-            deploy_callback: None,
-            spend_preview_callback: None,
-            spend_confirm_callback: None,
-        }
+        Self::default()
     }
 
+    #[must_use]
+    #[allow(dead_code)] // Reserved for future use
     pub fn with_deploy_callback<F>(mut self, callback: F) -> Self
     where
         F: Fn() + Send + Sync + 'static,
@@ -387,31 +392,22 @@ impl WsBroadcaster {
         self
     }
 
+    #[must_use]
     pub fn with_spend_preview_callback(mut self, callback: SpendPreviewCallback) -> Self {
         self.spend_preview_callback = Some(callback);
         self
     }
 
+    #[must_use]
     pub fn with_spend_confirm_callback(mut self, callback: SpendConfirmCallback) -> Self {
         self.spend_confirm_callback = Some(callback);
         self
     }
 
     /// Broadcast a message to all connected sessions
-    pub fn broadcast(&self, msg: ServerMessage) {
+    pub fn broadcast(&self, msg: &ServerMessage) {
         for session in &self.sessions {
             session.do_send(BroadcastMessage(msg.clone()));
-        }
-    }
-}
-
-impl Default for WsBroadcaster {
-    fn default() -> Self {
-        Self {
-            sessions: Vec::new(),
-            deploy_callback: None,
-            spend_preview_callback: None,
-            spend_confirm_callback: None,
         }
     }
 }
@@ -451,7 +447,7 @@ impl Handler<BroadcastMessage> for WsBroadcaster {
     type Result = ();
 
     fn handle(&mut self, msg: BroadcastMessage, _: &mut Self::Context) {
-        self.broadcast(msg.0);
+        self.broadcast(&msg.0);
     }
 }
 
@@ -466,8 +462,8 @@ impl Handler<SpendPreviewRequest> for WsBroadcaster {
                 msg.amount_sats,
             ) {
                 Some(preview) => ServerMessage::SpendPreviewResult {
-                    source_address: preview.source_address.clone(),
-                    destination: preview.destination.clone(),
+                    source_address: preview.source_address,
+                    destination: preview.destination,
                     amount: preview.amount,
                     fee: preview.fee,
                     change_amount: preview.change_amount,
@@ -500,11 +496,11 @@ impl Handler<SpendConfirmRequest> for WsBroadcaster {
             ) {
                 Ok((txid, change_address, change_amount, fee)) => {
                     // Broadcast success to all clients
-                    self.broadcast(ServerMessage::SpendSuccess {
-                        txid: txid.clone(),
+                    self.broadcast(&ServerMessage::SpendSuccess {
+                        txid,
                         amount: msg.amount_sats,
                         fee,
-                        change_address: change_address.clone(),
+                        change_address,
                         change_amount,
                     });
                     return; // Already broadcast to everyone
@@ -526,8 +522,7 @@ fn rand_id() -> usize {
     use std::time::SystemTime;
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as usize)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_nanos() as usize)
 }
 
 /// HTTP handler to upgrade to WebSocket

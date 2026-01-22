@@ -1,6 +1,10 @@
-//! SQLite database module for Samplicity
+//! `SQLite` database module for Samplicity
 //!
 //! Handles storage of pubkeys, addresses, UTXOs, and witness data.
+
+#![allow(clippy::missing_panics_doc)] // All panics are from mutex unwrap which shouldn't fail
+#![allow(clippy::missing_errors_doc)] // Error conditions are self-explanatory from Result type
+#![allow(clippy::significant_drop_tightening)] // Mutex lock needs to be held for prepared statements
 
 use rusqlite::{params, Connection, Result};
 use std::path::Path;
@@ -14,6 +18,7 @@ pub struct Database {
 
 /// Stored public key information
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields used in tests and future expansion
 pub struct StoredPubkey {
     pub id: i64,
     pub pubkey: Vec<u8>,
@@ -24,6 +29,7 @@ pub struct StoredPubkey {
 
 /// Stored address information
 #[derive(Debug, Clone, serde::Serialize)]
+#[allow(dead_code)] // witness_pk used in future expansion
 pub struct StoredAddress {
     pub id: i64,
     pub address: String,
@@ -59,6 +65,7 @@ impl Database {
     }
 
     /// Open an in-memory database (for testing)
+    #[allow(dead_code)] // Used in tests
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         let db = Self {
@@ -111,6 +118,7 @@ impl Database {
             [],
         )?;
 
+        drop(conn);
         Ok(())
     }
 
@@ -135,6 +143,7 @@ impl Database {
     }
 
     /// Get all addresses with their pubkey hashes
+    #[allow(clippy::cast_sign_loss)]
     pub fn get_all_addresses(&self) -> Result<Vec<StoredAddress>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -160,6 +169,7 @@ impl Database {
     }
 
     /// Get a single address by its string representation
+    #[allow(clippy::cast_sign_loss)]
     pub fn get_address(&self, address: &str) -> Result<Option<StoredAddress>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -187,6 +197,7 @@ impl Database {
     }
 
     /// Update the balance for an address, returns true if balance changed
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
     pub fn update_balance(&self, address: &str, new_balance: u64) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
 
@@ -205,6 +216,7 @@ impl Database {
                     "UPDATE addresses SET balance = ?1 WHERE address = ?2",
                     params![new_balance as i64, address],
                 )?;
+                drop(conn);
                 return Ok(true);
             }
         }
@@ -240,6 +252,7 @@ impl Database {
     // ==================== UTXO Methods ====================
 
     /// Insert or update a UTXO (upsert based on txid+vout)
+    #[allow(clippy::cast_possible_wrap)]
     pub fn upsert_utxo(
         &self,
         address_id: i64,
@@ -255,12 +268,13 @@ impl Database {
              ON CONFLICT(txid, vout) DO UPDATE SET
                 amount = excluded.amount,
                 asset = excluded.asset",
-            params![address_id, txid, vout as i64, amount as i64, asset],
+            params![address_id, txid, i64::from(vout), amount as i64, asset],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
     /// Get all unspent UTXOs for an address
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     pub fn get_unspent_utxos(&self, address: &str) -> Result<Vec<StoredUtxo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -285,7 +299,9 @@ impl Database {
         utxos.collect()
     }
 
-    /// Get all unspent UTXOs for an address by address_id
+    /// Get all unspent UTXOs for an address by `address_id`
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    #[allow(dead_code)] // Used in tests
     pub fn get_unspent_utxos_by_id(&self, address_id: i64) -> Result<Vec<StoredUtxo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -314,7 +330,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let rows_affected = conn.execute(
             "UPDATE utxos SET spent = 1 WHERE txid = ?1 AND vout = ?2",
-            params![txid, vout as i64],
+            params![txid, i64::from(vout)],
         )?;
         Ok(rows_affected > 0)
     }
@@ -339,16 +355,16 @@ impl Database {
         // Build a list of (txid, vout) pairs to keep
         let placeholders: Vec<String> = keep_utxos
             .iter()
-            .map(|(txid, vout)| format!("('{}', {})", txid, vout))
+            .map(|(txid, vout)| format!("('{txid}', {vout})"))
             .collect();
         let values_list = placeholders.join(", ");
 
         let sql = format!(
-            "DELETE FROM utxos WHERE address_id = ?1 AND (txid, vout) NOT IN (VALUES {})",
-            values_list
+            "DELETE FROM utxos WHERE address_id = ?1 AND (txid, vout) NOT IN (VALUES {values_list})"
         );
 
         let removed = conn.execute(&sql, params![address_id])?;
+        drop(conn);
         Ok(removed)
     }
 
@@ -381,6 +397,8 @@ impl Database {
     }
 
     /// Get address ID by address string
+    #[allow(dead_code)] // Used in tests
+    #[allow(clippy::unnecessary_wraps)] // Consistent with other methods that return Result
     pub fn get_address_id(&self, address: &str) -> Result<Option<i64>> {
         let conn = self.conn.lock().unwrap();
         let result: Option<i64> = conn
@@ -407,9 +425,8 @@ impl Database {
             )
             .ok();
 
-        let (address_id, pubkey_id) = match addr_info {
-            Some(info) => info,
-            None => return Ok(false), // Address not found
+        let Some((address_id, pubkey_id)) = addr_info else {
+            return Ok(false);
         };
 
         // Delete associated UTXOs
@@ -435,6 +452,7 @@ impl Database {
             conn.execute("DELETE FROM pubkeys WHERE id = ?1", params![pubkey_id])?;
         }
 
+        drop(conn);
         Ok(true)
     }
 }

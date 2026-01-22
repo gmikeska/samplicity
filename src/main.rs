@@ -3,6 +3,10 @@
 //! This application demonstrates deploying and managing Simplicity p2pkh addresses
 //! with a web interface, WebSocket updates, and balance monitoring via Elements RPC.
 
+#![allow(clippy::significant_drop_tightening)] // State locks need to be held for the entire scope
+#![allow(clippy::too_many_lines)] // Complex callback functions
+#![allow(clippy::type_complexity)] // Complex callback types
+
 mod db;
 mod deploy;
 mod spend;
@@ -60,7 +64,7 @@ async fn deploy_address(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
                                 Some("samplicity"),
                                 false,
                             ) {
-                                eprintln!("Warning: Failed to import address to wallet: {}", e);
+                                eprintln!("Warning: Failed to import address to wallet: {e}");
                                 // Continue anyway - address is stored, just won't show in listunspent
                             } else {
                                 println!("Imported address to wallet: {}", deployed.address);
@@ -82,19 +86,19 @@ async fn deploy_address(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responde
                         }
                         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
                             "success": false,
-                            "error": format!("Failed to store address: {}", e)
+                            "error": format!("Failed to store address: {e}")
                         })),
                     }
                 }
                 Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
                     "success": false,
-                    "error": format!("Failed to store pubkey: {}", e)
+                    "error": format!("Failed to store pubkey: {e}")
                 })),
             }
         }
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
             "success": false,
-            "error": format!("Failed to deploy address: {}", e)
+            "error": format!("Failed to deploy address: {e}")
         })),
     }
 }
@@ -109,7 +113,7 @@ async fn get_addresses(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responder
             HttpResponse::Ok().json(infos)
         }
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": format!("Failed to get addresses: {}", e)
+            "error": format!("Failed to get addresses: {e}")
         })),
     }
 }
@@ -135,7 +139,7 @@ async fn balance_polling_task(
         let addresses = match db.get_all_addresses() {
             Ok(addrs) => addrs,
             Err(e) => {
-                eprintln!("Failed to get addresses for balance check: {}", e);
+                eprintln!("Failed to get addresses for balance check: {e}");
                 tokio::time::sleep(Duration::from_secs(30)).await;
                 continue;
             }
@@ -147,7 +151,7 @@ async fn balance_polling_task(
             let address = match musk::elements::Address::from_str(&addr.address) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("Failed to parse address {}: {}", addr.address, e);
+                    eprintln!("Failed to parse address {}: {e}", addr.address);
                     continue;
                 }
             };
@@ -173,7 +177,7 @@ async fn balance_polling_task(
                         .collect();
 
                     if let Err(e) = db.sync_utxos(&addr.address, &utxo_data) {
-                        eprintln!("Failed to sync UTXOs for {}: {}", addr.address, e);
+                        eprintln!("Failed to sync UTXOs for {}: {e}", addr.address);
                     }
 
                     // Update balance in DB and check if changed
@@ -181,8 +185,8 @@ async fn balance_polling_task(
                         Ok(changed) => {
                             if changed {
                                 println!(
-                                    "Balance updated for {}: {} sats ({} UTXOs)",
-                                    addr.address, balance_sats, utxo_count
+                                    "Balance updated for {}: {balance_sats} sats ({utxo_count} UTXOs)",
+                                    addr.address
                                 );
 
                                 // Broadcast update to clients
@@ -195,12 +199,12 @@ async fn balance_polling_task(
                             }
                         }
                         Err(e) => {
-                            eprintln!("Failed to update balance for {}: {}", addr.address, e);
+                            eprintln!("Failed to update balance for {}: {e}", addr.address);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to get UTXOs for {} via RPC: {}", addr.address, e);
+                    eprintln!("Failed to get UTXOs for {} via RPC: {e}", addr.address);
                 }
             }
         }
@@ -215,18 +219,18 @@ fn load_config() -> String {
     // Try to load from musk.conf
     let config_path = "musk.conf";
 
-    if let Ok(config) = musk::NodeConfig::from_file(config_path) {
-        let network = match config.network() {
-            musk::Network::Regtest => "regtest",
-            musk::Network::Testnet => "testnet",
-            musk::Network::Liquid => "liquidv1",
-        };
+    musk::NodeConfig::from_file(config_path).map_or_else(
+        |_| "testnet".to_string(),
+        |config| {
+            let network = match config.network() {
+                musk::Network::Regtest => "regtest",
+                musk::Network::Testnet => "testnet",
+                musk::Network::Liquid => "liquidv1",
+            };
 
-        network.to_string()
-    } else {
-        // Fallback to testnet
-        "testnet".to_string()
-    }
+            network.to_string()
+        },
+    )
 }
 
 /// Create spend preview callback
@@ -238,7 +242,7 @@ fn create_spend_preview_callback(
         let utxos = match db.get_unspent_utxos(&source_address) {
             Ok(utxos) => utxos,
             Err(e) => {
-                eprintln!("Failed to get UTXOs: {}", e);
+                eprintln!("Failed to get UTXOs: {e}");
                 return None;
             }
         };
@@ -260,7 +264,7 @@ fn create_spend_preview_callback(
                 total_input: preview.total_input,
             }),
             Err(e) => {
-                eprintln!("Failed to calculate preview: {}", e);
+                eprintln!("Failed to calculate preview: {e}");
                 None
             }
         }
@@ -288,18 +292,18 @@ fn create_spend_confirm_callback(
             // 1. Get address info and pubkey from DB
             let source_addr = db
                 .get_address(&source_address)
-                .map_err(|e| format!("DB error: {}", e))?
+                .map_err(|e| format!("DB error: {e}"))?
                 .ok_or_else(|| "Source address not found".to_string())?;
 
             let pubkey_info = db
                 .get_pubkey_for_address(&source_address)
-                .map_err(|e| format!("DB error: {}", e))?
+                .map_err(|e| format!("DB error: {e}"))?
                 .ok_or_else(|| "Pubkey not found for address".to_string())?;
 
             // 2. Get UTXOs
             let utxos = db
                 .get_unspent_utxos(&source_address)
-                .map_err(|e| format!("Failed to get UTXOs: {}", e))?;
+                .map_err(|e| format!("Failed to get UTXOs: {e}"))?;
 
             if utxos.is_empty() {
                 return Err("No UTXOs available to spend".to_string());
@@ -307,12 +311,11 @@ fn create_spend_confirm_callback(
 
             // === UTXO VERIFICATION ===
             println!("=== UTXO DATA FROM DATABASE ===");
-            println!("  Source address: {}", source_address);
+            println!("  Source address: {source_address}");
             println!("  Total UTXOs: {}", utxos.len());
             for (i, u) in utxos.iter().enumerate() {
                 println!(
-                    "  UTXO[{}]: txid={}, vout={}, amount={} sats, asset={}",
-                    i,
+                    "  UTXO[{i}]: txid={}, vout={}, amount={} sats, asset={}",
                     u.txid,
                     u.vout,
                     u.amount,
@@ -329,11 +332,11 @@ fn create_spend_confirm_callback(
             // Only use the first UTXO (we spend one UTXO at a time for simplicity)
             let preview =
                 calculate_spend_preview(&source_address, &destination, amount_sats, &utxos[..1])
-                    .map_err(|e| format!("Preview calculation failed: {}", e))?;
+                    .map_err(|e| format!("Preview calculation failed: {e}"))?;
 
             // Log the preview
             println!("=== SPEND PREVIEW ===");
-            println!("  Requested amount: {} sats", amount_sats);
+            println!("  Requested amount: {amount_sats} sats");
             println!("  Calculated fee:   {} sats", preview.fee);
             println!(
                 "  Change amount:    {} sats (has_change={})",
@@ -349,7 +352,7 @@ fn create_spend_confirm_callback(
             // 4. Deploy change address if needed
             let (change_address_str, change_amount) = if preview.has_change {
                 let change_deployed = deploy_change_address(&program_path, address_params)
-                    .map_err(|e| format!("Failed to deploy change address: {}", e))?;
+                    .map_err(|e| format!("Failed to deploy change address: {e}"))?;
 
                 // Store change address in DB
                 let change_pubkey_id = db
@@ -358,20 +361,20 @@ fn create_spend_confirm_callback(
                         &change_deployed.pk_hash,
                         &change_deployed.mnemonic,
                     )
-                    .map_err(|e| format!("Failed to store change pubkey: {}", e))?;
+                    .map_err(|e| format!("Failed to store change pubkey: {e}"))?;
 
                 db.insert_address(
                     &change_deployed.address,
                     change_pubkey_id,
                     &change_deployed.pubkey,
                 )
-                .map_err(|e| format!("Failed to store change address: {}", e))?;
+                .map_err(|e| format!("Failed to store change address: {e}"))?;
 
                 // Import change address to Elements wallet for balance tracking
                 if let Err(e) =
                     rpc_client.import_address(&change_deployed.address, Some("samplicity"), false)
                 {
-                    eprintln!("Warning: Failed to import change address to wallet: {}", e);
+                    eprintln!("Warning: Failed to import change address to wallet: {e}");
                     // Continue anyway - address is stored, balance polling may be delayed
                 }
 
@@ -386,17 +389,17 @@ fn create_spend_confirm_callback(
             let genesis_hash_hex =
                 "a771da8e52ee6ad581ed1e9a99825e5b3b7992225534eaa2ae23244fe26ab1c1";
             let genesis_hash = musk::elements::BlockHash::from_str(genesis_hash_hex)
-                .map_err(|e| format!("Invalid genesis hash: {}", e))?;
+                .map_err(|e| format!("Invalid genesis hash: {e}"))?;
 
             // 6. Get source script pubkey
             let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr.pk_hash)
-                .map_err(|e| format!("Invalid pk_hash hex: {}", e))?
+                .map_err(|e| format!("Invalid pk_hash hex: {e}"))?
                 .try_into()
                 .map_err(|_| "Invalid pk_hash length")?;
 
             let source_script =
                 get_script_pubkey_for_pk_hash(&program_path, &pk_hash_bytes, address_params)
-                    .map_err(|e| format!("Failed to get source script: {}", e))?;
+                    .map_err(|e| format!("Failed to get source script: {e}"))?;
 
             // 7. Create spend orchestrator and execute
             let orchestrator = SpendOrchestrator::new(&program_path, address_params, genesis_hash);
@@ -413,7 +416,7 @@ fn create_spend_confirm_callback(
                     amount_sats,
                     change_address_str.as_deref(),
                 )
-                .map_err(|e| format!("Spend execution failed: {}", e))?;
+                .map_err(|e| format!("Spend execution failed: {e}"))?;
 
             // 8. Broadcast transaction via Elements node RPC
             let tx_hex = transaction_to_hex(&tx);
@@ -422,28 +425,28 @@ fn create_spend_confirm_callback(
                 tx_hex.len() / 2,
                 &tx_hex[..100.min(tx_hex.len())]
             );
-            println!("Full tx hex for debugging: {}", tx_hex);
+            println!("Full tx hex for debugging: {tx_hex}");
 
             // Use the Elements RPC client to broadcast (synchronous, immediate response)
             let rpc = rpc_client.clone();
             let txid = rpc
                 .broadcast(&tx)
                 .map_err(|e| {
-                    eprintln!("Broadcast error from Elements RPC: {}", e);
-                    format!("Broadcast failed: {}", e)
+                    eprintln!("Broadcast error from Elements RPC: {e}");
+                    format!("Broadcast failed: {e}")
                 })?
                 .to_string();
 
-            println!("Transaction broadcast! TXID: {}", txid);
+            println!("Transaction broadcast! TXID: {txid}");
 
             // 9. Mark spent UTXOs in DB (just the first one for now since we only use one)
             let spent_utxo = &utxos[0];
             db.mark_utxo_spent(&spent_utxo.txid, spent_utxo.vout)
-                .map_err(|e| format!("Failed to mark UTXO as spent: {}", e))?;
+                .map_err(|e| format!("Failed to mark UTXO as spent: {e}"))?;
 
             // 10. Update source address balance (set to 0 since we spent all)
             db.update_balance(&source_address, 0)
-                .map_err(|e| format!("Failed to update balance: {}", e))?;
+                .map_err(|e| format!("Failed to update balance: {e}"))?;
 
             Ok((txid, change_address_str, change_amount, preview.fee))
         },
@@ -462,7 +465,7 @@ async fn main() -> std::io::Result<()> {
 
     // Load configuration
     let network = load_config();
-    println!("Loaded configuration for network: {}", network);
+    println!("Loaded configuration for network: {network}");
 
     // Initialize database
     let db = Database::open("samplicity.db").expect("Failed to open database");
@@ -485,7 +488,7 @@ async fn main() -> std::io::Result<()> {
         );
         for addr in existing_addrs {
             if let Err(e) = rpc_client.import_address(&addr.address, Some("samplicity"), false) {
-                eprintln!("  Warning: Failed to import {}: {}", &addr.address[..20], e);
+                eprintln!("  Warning: Failed to import {}: {e}", &addr.address[..20]);
             }
         }
         println!("Address import complete");

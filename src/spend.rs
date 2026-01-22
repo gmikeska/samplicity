@@ -3,6 +3,9 @@
 //! Handles transaction building, signing, and broadcasting for spending from
 //! Simplicity P2PKH addresses.
 
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::too_many_arguments)]
+
 use bip39::Mnemonic;
 use musk::elements::{self, Address, Script};
 use musk::simplicityhl::num::U256;
@@ -28,6 +31,7 @@ pub const DEFAULT_FEE_SATS: u64 = 500;
 
 /// Error type for spend operations
 #[derive(Debug)]
+#[allow(dead_code)] // Variants reserved for future use
 pub enum SpendError {
     InsufficientFunds { available: u64, required: u64 },
     NoUtxos,
@@ -43,24 +47,23 @@ pub enum SpendError {
 impl std::fmt::Display for SpendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SpendError::InsufficientFunds {
+            Self::InsufficientFunds {
                 available,
                 required,
             } => {
                 write!(
                     f,
-                    "Insufficient funds: have {} sats, need {} sats",
-                    available, required
+                    "Insufficient funds: have {available} sats, need {required} sats"
                 )
             }
-            SpendError::NoUtxos => write!(f, "No UTXOs available to spend"),
-            SpendError::InvalidAddress(msg) => write!(f, "Invalid address: {}", msg),
-            SpendError::InvalidMnemonic(msg) => write!(f, "Invalid mnemonic: {}", msg),
-            SpendError::ProgramError(msg) => write!(f, "Program error: {}", msg),
-            SpendError::SigningError(msg) => write!(f, "Signing error: {}", msg),
-            SpendError::BroadcastError(msg) => write!(f, "Broadcast error: {}", msg),
-            SpendError::DatabaseError(msg) => write!(f, "Database error: {}", msg),
-            SpendError::GenesisHashError(msg) => write!(f, "Genesis hash error: {}", msg),
+            Self::NoUtxos => write!(f, "No UTXOs available to spend"),
+            Self::InvalidAddress(msg) => write!(f, "Invalid address: {msg}"),
+            Self::InvalidMnemonic(msg) => write!(f, "Invalid mnemonic: {msg}"),
+            Self::ProgramError(msg) => write!(f, "Program error: {msg}"),
+            Self::SigningError(msg) => write!(f, "Signing error: {msg}"),
+            Self::BroadcastError(msg) => write!(f, "Broadcast error: {msg}"),
+            Self::DatabaseError(msg) => write!(f, "Database error: {msg}"),
+            Self::GenesisHashError(msg) => write!(f, "Genesis hash error: {msg}"),
         }
     }
 }
@@ -69,6 +72,7 @@ impl std::error::Error for SpendError {}
 
 /// Result of a successful spend operation
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Reserved for future use
 pub struct SpendResult {
     /// Transaction ID of the broadcast transaction
     pub txid: String,
@@ -103,10 +107,10 @@ pub struct SpendPreview {
 
 /// Derive the secret key from a mnemonic phrase
 ///
-/// Uses the same derivation as deploy.rs: first 32 bytes of mnemonic.to_seed("")
+/// Uses the same derivation as deploy.rs: first 32 bytes of `mnemonic.to_seed`("")
 pub fn derive_secret_key_from_mnemonic(mnemonic_phrase: &str) -> Result<[u8; 32], SpendError> {
     let mnemonic = Mnemonic::from_str(mnemonic_phrase)
-        .map_err(|e| SpendError::InvalidMnemonic(format!("Failed to parse mnemonic: {}", e)))?;
+        .map_err(|e| SpendError::InvalidMnemonic(format!("Failed to parse mnemonic: {e}")))?;
 
     let seed = mnemonic.to_seed("");
     let mut secret_key = [0u8; 32];
@@ -117,7 +121,7 @@ pub fn derive_secret_key_from_mnemonic(mnemonic_phrase: &str) -> Result<[u8; 32]
 
 /// Sign a message using Schnorr signature with actual secret key bytes
 ///
-/// This is different from musk's util::sign_schnorr which only takes u32
+/// This is different from musk's `util::sign_schnorr` which only takes u32
 pub fn sign_schnorr_with_bytes(
     secret_key: &[u8; 32],
     message: [u8; 32],
@@ -125,7 +129,7 @@ pub fn sign_schnorr_with_bytes(
     let secp = Secp256k1::new();
 
     let sk = SecretKey::from_slice(secret_key)
-        .map_err(|e| SpendError::SigningError(format!("Invalid secret key: {}", e)))?;
+        .map_err(|e| SpendError::SigningError(format!("Invalid secret key: {e}")))?;
 
     let keypair = Keypair::from_secret_key(&secp, &sk);
     let msg = Message::from_digest(message);
@@ -139,7 +143,7 @@ pub fn get_xonly_pubkey(secret_key: &[u8; 32]) -> Result<[u8; 32], SpendError> {
     let secp = Secp256k1::new();
 
     let sk = SecretKey::from_slice(secret_key)
-        .map_err(|e| SpendError::SigningError(format!("Invalid secret key: {}", e)))?;
+        .map_err(|e| SpendError::SigningError(format!("Invalid secret key: {e}")))?;
 
     let keypair = Keypair::from_secret_key(&secp, &sk);
     let (xonly, _parity) = keypair.x_only_public_key();
@@ -148,6 +152,8 @@ pub fn get_xonly_pubkey(secret_key: &[u8; 32]) -> Result<[u8; 32], SpendError> {
 }
 
 /// Compute SHA256 hash of a public key (as used in p2pkh.simf)
+#[must_use]
+#[allow(dead_code)] // Used in tests
 pub fn compute_pk_hash(pubkey: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(pubkey);
@@ -155,6 +161,7 @@ pub fn compute_pk_hash(pubkey: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Validate that a secret key matches the stored pubkey
+#[allow(dead_code)] // Used in tests
 pub fn validate_key_pair(secret_key: &[u8; 32], stored_pubkey: &[u8]) -> Result<bool, SpendError> {
     let derived_pubkey = get_xonly_pubkey(secret_key)?;
     Ok(derived_pubkey.as_slice() == stored_pubkey)
@@ -207,13 +214,13 @@ pub fn calculate_spend_preview(
     })
 }
 
-/// Load and instantiate the p2pkh program with the given pk_hash
+/// Load and instantiate the p2pkh program with the given `pk_hash`
 pub fn load_p2pkh_program(
     program_path: &str,
     pk_hash: &[u8; 32],
 ) -> Result<InstantiatedProgram, SpendError> {
     let program = Program::from_file(program_path)
-        .map_err(|e| SpendError::ProgramError(format!("Failed to load program: {}", e)))?;
+        .map_err(|e| SpendError::ProgramError(format!("Failed to load program: {e}")))?;
 
     let mut args = HashMap::new();
     args.insert(
@@ -223,7 +230,7 @@ pub fn load_p2pkh_program(
 
     let compiled = program
         .instantiate(Arguments::from(args))
-        .map_err(|e| SpendError::ProgramError(format!("Failed to instantiate program: {}", e)))?;
+        .map_err(|e| SpendError::ProgramError(format!("Failed to instantiate program: {e}")))?;
 
     Ok(compiled)
 }
@@ -231,8 +238,9 @@ pub fn load_p2pkh_program(
 /// Build witness values for p2pkh spending
 ///
 /// The p2pkh.simf program requires:
-/// - witness::PK - the x-only public key
-/// - witness::SIG - the Schnorr signature of sighash_all
+/// - `witness::PK` - the x-only public key
+/// - `witness::SIG` - the Schnorr signature of `sighash_all`
+#[must_use]
 pub fn build_witness_values(
     pubkey: &[u8; 32],
     signature: &[u8; 64],
@@ -260,7 +268,7 @@ pub fn parse_address(
     _address_params: &'static elements::AddressParams,
 ) -> Result<Address, SpendError> {
     Address::from_str(address_str)
-        .map_err(|e| SpendError::InvalidAddress(format!("Failed to parse address: {}", e)))
+        .map_err(|e| SpendError::InvalidAddress(format!("Failed to parse address: {e}")))
 }
 
 /// Get the L-BTC asset ID for testnet
@@ -268,7 +276,7 @@ pub fn get_lbtc_asset_id() -> Result<elements::issuance::AssetId, SpendError> {
     // Use from_str which handles the byte order conversion correctly
     // (display format is big-endian, internal format is little-endian)
     elements::issuance::AssetId::from_str(LBTC_TESTNET_ASSET_ID)
-        .map_err(|e| SpendError::ProgramError(format!("Invalid asset ID: {}", e)))
+        .map_err(|e| SpendError::ProgramError(format!("Invalid asset ID: {e}")))
 }
 
 /// Convert a stored UTXO to musk's Utxo type
@@ -277,11 +285,11 @@ pub fn stored_utxo_to_musk_utxo(
     script_pubkey: Script,
 ) -> Result<musk::client::Utxo, SpendError> {
     let txid = elements::Txid::from_str(&utxo.txid)
-        .map_err(|e| SpendError::ProgramError(format!("Invalid txid: {}", e)))?;
+        .map_err(|e| SpendError::ProgramError(format!("Invalid txid: {e}")))?;
 
     // Use from_str which handles byte order conversion correctly
     let asset_id = elements::issuance::AssetId::from_str(&utxo.asset)
-        .map_err(|e| SpendError::ProgramError(format!("Invalid asset ID: {}", e)))?;
+        .map_err(|e| SpendError::ProgramError(format!("Invalid asset ID: {e}")))?;
 
     Ok(musk::client::Utxo {
         txid,
@@ -296,6 +304,7 @@ pub fn stored_utxo_to_musk_utxo(
 ///
 /// This takes a source UTXO, builds a transaction with destination and optional change,
 /// signs it using the derived secret key, and returns the finalized transaction.
+#[allow(clippy::redundant_clone)]
 pub fn build_and_sign_transaction(
     program_path: &str,
     utxo: &StoredUtxo,
@@ -314,29 +323,21 @@ pub fn build_and_sign_transaction(
     let total_outputs = amount + fee + change_amount;
 
     println!("=== TRANSACTION VALUE VERIFICATION ===");
-    println!("  INPUT:  UTXO amount from DB = {} sats", input_amount);
-    println!("  OUTPUT: Destination amount  = {} sats", amount);
-    println!("  OUTPUT: Change amount       = {} sats", change_amount);
-    println!("  OUTPUT: Fee amount          = {} sats", fee);
-    println!("  TOTAL:  Sum of outputs      = {} sats", total_outputs);
+    println!("  INPUT:  UTXO amount from DB = {input_amount} sats");
+    println!("  OUTPUT: Destination amount  = {amount} sats");
+    println!("  OUTPUT: Change amount       = {change_amount} sats");
+    println!("  OUTPUT: Fee amount          = {fee} sats");
+    println!("  TOTAL:  Sum of outputs      = {total_outputs} sats");
     println!("  UTXO:   txid={}, vout={}", utxo.txid, utxo.vout);
 
     if input_amount != total_outputs {
-        let diff = if input_amount > total_outputs {
-            input_amount - total_outputs
-        } else {
-            total_outputs - input_amount
-        };
-        eprintln!(
-            "  *** MISMATCH! Input != Outputs (diff = {} sats) ***",
-            diff
-        );
+        let diff = input_amount.abs_diff(total_outputs);
+        eprintln!("  *** MISMATCH! Input != Outputs (diff = {diff} sats) ***");
         return Err(SpendError::ProgramError(format!(
-            "Value mismatch: input={} but outputs sum to {} (diff={})",
-            input_amount, total_outputs, diff
+            "Value mismatch: input={input_amount} but outputs sum to {total_outputs} (diff={diff})"
         )));
     }
-    println!("  [OK] Values match: {} == {}", input_amount, total_outputs);
+    println!("  [OK] Values match: {input_amount} == {total_outputs}");
     println!("=======================================");
 
     // 1. Load and instantiate the program
@@ -367,7 +368,7 @@ pub fn build_and_sign_transaction(
     // 8. Compute sighash
     let sighash = builder
         .sighash_all()
-        .map_err(|e| SpendError::SigningError(format!("Failed to compute sighash: {}", e)))?;
+        .map_err(|e| SpendError::SigningError(format!("Failed to compute sighash: {e}")))?;
 
     // 9. Derive secret key from mnemonic
     let secret_key = derive_secret_key_from_mnemonic(mnemonic)?;
@@ -384,10 +385,11 @@ pub fn build_and_sign_transaction(
     // 13. Finalize and return the transaction
     builder
         .finalize(witness_values)
-        .map_err(|e| SpendError::SigningError(format!("Failed to finalize transaction: {}", e)))
+        .map_err(|e| SpendError::SigningError(format!("Failed to finalize transaction: {e}")))
 }
 
 /// Complete spend operation that handles everything from UTXOs to final transaction
+#[allow(dead_code)] // Reserved for future use
 pub struct SpendRequest {
     /// Source address to spend from
     pub source_address: String,
@@ -408,6 +410,7 @@ pub struct SpendOrchestrator {
 
 impl SpendOrchestrator {
     /// Create a new spend orchestrator
+    #[must_use]
     pub fn new(
         program_path: &str,
         address_params: &'static elements::AddressParams,
@@ -421,7 +424,9 @@ impl SpendOrchestrator {
     }
 
     /// Set the genesis hash
-    pub fn with_genesis_hash(mut self, genesis_hash: elements::BlockHash) -> Self {
+    #[must_use]
+    #[allow(dead_code)] // Used in tests
+    pub const fn with_genesis_hash(mut self, genesis_hash: elements::BlockHash) -> Self {
         self.genesis_hash = genesis_hash;
         self
     }
@@ -489,6 +494,11 @@ impl SpendOrchestrator {
 }
 
 /// Serialize a transaction to hex for broadcasting
+///
+/// # Panics
+///
+/// Panics if encoding the transaction fails, which should not happen for valid transactions.
+#[must_use]
 pub fn transaction_to_hex(tx: &elements::Transaction) -> String {
     use elements::encode::Encodable;
     let mut buf = Vec::new();
