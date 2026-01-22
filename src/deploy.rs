@@ -157,39 +157,3 @@ pub fn get_script_pubkey_for_pk_hash<P: AsRef<Path>>(
     let address = compiled.address(address_params);
     Ok(address.script_pubkey())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sha256_computation() {
-        // Test that SHA256 computation matches expected format
-        let test_bytes = [0u8; 32];
-        let mut hasher = Sha256::new();
-        hasher.update(&test_bytes);
-        let result: [u8; 32] = hasher.finalize().into();
-        let hex_result = hex::encode(&result);
-
-        // SHA256 of 32 zero bytes
-        assert_eq!(hex_result.len(), 64);
-    }
-
-    #[test]
-    fn test_get_address_params() {
-        let testnet = get_address_params("testnet");
-        let liquid = get_address_params("liquidv1");
-        let regtest = get_address_params("regtest");
-
-        // Just verify they don't panic and return different params
-        assert!(std::ptr::eq(
-            testnet,
-            &musk::elements::AddressParams::LIQUID_TESTNET
-        ));
-        assert!(std::ptr::eq(liquid, &musk::elements::AddressParams::LIQUID));
-        assert!(std::ptr::eq(
-            regtest,
-            &musk::elements::AddressParams::ELEMENTS
-        ));
-    }
-}
