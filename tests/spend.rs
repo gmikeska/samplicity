@@ -1,13 +1,13 @@
 //! Spend tests for Samplicity
 
 use samplicity::db::StoredUtxo;
-use samplicity::spend::{
-    calculate_spend_preview, compute_pk_hash, derive_secret_key_from_mnemonic,
-    get_lbtc_asset_id, get_xonly_pubkey, parse_address, sign_schnorr_with_bytes,
-    stored_utxo_to_musk_utxo, transaction_to_hex, validate_key_pair, build_witness_values,
-    SpendError, SpendOrchestrator, DUST_THRESHOLD, DEFAULT_FEE_SATS, LBTC_TESTNET_ASSET_ID,
-};
 use samplicity::deploy::get_address_params;
+use samplicity::spend::{
+    build_witness_values, calculate_spend_preview, compute_pk_hash,
+    derive_secret_key_from_mnemonic, get_lbtc_asset_id, get_xonly_pubkey, parse_address,
+    sign_schnorr_with_bytes, stored_utxo_to_musk_utxo, transaction_to_hex, validate_key_pair,
+    SpendError, SpendOrchestrator, DEFAULT_FEE_SATS, DUST_THRESHOLD, LBTC_TESTNET_ASSET_ID,
+};
 
 /// Test mnemonic for consistent results
 const TEST_MNEMONIC: &str =
@@ -198,7 +198,7 @@ fn test_parse_address_valid() {
 #[test]
 fn test_get_lbtc_asset_id() {
     let asset_id = get_lbtc_asset_id().unwrap();
-    
+
     // Verify it's the expected testnet asset ID
     // AssetId uses the Midstate type, which has a .0 field for the inner bytes
     let inner = asset_id.into_inner();
@@ -210,14 +210,14 @@ fn test_get_lbtc_asset_id() {
 fn test_transaction_to_hex() {
     // Create a minimal transaction to test hex encoding
     use musk::elements;
-    
+
     let tx = elements::Transaction {
         version: 2,
         lock_time: elements::LockTime::ZERO,
         input: vec![],
         output: vec![],
     };
-    
+
     let hex = transaction_to_hex(&tx);
     assert!(!hex.is_empty());
     // Verify it's valid hex
@@ -228,7 +228,7 @@ fn test_transaction_to_hex() {
 fn test_build_witness_values() {
     let pk = [1u8; 32];
     let sig = [2u8; 64];
-    
+
     // Just verify this doesn't panic - WitnessValues is opaque
     let _witness = build_witness_values(&pk, &sig);
 }
@@ -236,7 +236,7 @@ fn test_build_witness_values() {
 #[test]
 fn test_stored_utxo_to_musk_utxo() {
     use musk::elements::Script;
-    
+
     let stored = StoredUtxo {
         id: 1,
         address_id: 1,
@@ -246,13 +246,17 @@ fn test_stored_utxo_to_musk_utxo() {
         asset: LBTC_TESTNET_ASSET_ID.to_string(),
         spent: false,
     };
-    
+
     // Create an empty script for testing
     let script = Script::new();
-    
+
     let result = stored_utxo_to_musk_utxo(&stored, script);
-    assert!(result.is_ok(), "stored_utxo_to_musk_utxo failed: {:?}", result.err());
-    
+    assert!(
+        result.is_ok(),
+        "stored_utxo_to_musk_utxo failed: {:?}",
+        result.err()
+    );
+
     let utxo = result.unwrap();
     assert_eq!(utxo.amount, 100000);
     assert_eq!(utxo.vout, 0);
@@ -260,22 +264,19 @@ fn test_stored_utxo_to_musk_utxo() {
 
 #[test]
 fn test_spend_orchestrator_new() {
-    use std::str::FromStr;
     use musk::elements;
-    
+    use std::str::FromStr;
+
     let address_params = get_address_params("regtest");
-    
+
     // Create a genesis hash for testing
     let genesis_hash = elements::BlockHash::from_str(
-        "0000000000000000000000000000000000000000000000000000000000000000"
-    ).unwrap();
-    
-    let orchestrator = SpendOrchestrator::new(
-        "musk/p2pkh.simf",
-        address_params,
-        genesis_hash,
-    );
-    
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
+
+    let orchestrator = SpendOrchestrator::new("musk/p2pkh.simf", address_params, genesis_hash);
+
     // Just verify it was created successfully
     drop(orchestrator);
 }

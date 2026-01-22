@@ -16,9 +16,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use db::Database;
-use deploy::{deploy_change_address, deploy_new_address, get_address_params, get_script_pubkey_for_pk_hash};
+use deploy::{
+    deploy_change_address, deploy_new_address, get_address_params, get_script_pubkey_for_pk_hash,
+};
 use musk::{NodeClient, NodeConfig, RpcClient};
-use spend::{calculate_spend_preview, SpendOrchestrator, transaction_to_hex};
+use spend::{calculate_spend_preview, transaction_to_hex, SpendOrchestrator};
 use websocket::{
     ws_index, AddressInfo, BroadcastMessage, ServerMessage, SpendPreviewData, WsBroadcaster,
 };
@@ -184,10 +186,12 @@ async fn balance_polling_task(
                                 );
 
                                 // Broadcast update to clients
-                                broadcaster.do_send(BroadcastMessage(ServerMessage::BalanceUpdate {
-                                    address: addr.address.clone(),
-                                    balance: balance_sats,
-                                }));
+                                broadcaster.do_send(BroadcastMessage(
+                                    ServerMessage::BalanceUpdate {
+                                        address: addr.address.clone(),
+                                        balance: balance_sats,
+                                    },
+                                ));
                             }
                         }
                         Err(e) => {
@@ -269,13 +273,16 @@ fn create_spend_confirm_callback(
     rpc_client: Arc<RpcClient>,
     program_path: String,
     network: String,
-) -> Box<dyn Fn(String, String, u64) -> Result<(String, Option<String>, Option<u64>, u64), String> + Send + Sync>
-{
+) -> Box<
+    dyn Fn(String, String, u64) -> Result<(String, Option<String>, Option<u64>, u64), String>
+        + Send
+        + Sync,
+> {
     Box::new(
-        move |source_address, destination, amount_sats| -> Result<
-            (String, Option<String>, Option<u64>, u64),
-            String,
-        > {
+        move |source_address,
+              destination,
+              amount_sats|
+              -> Result<(String, Option<String>, Option<u64>, u64), String> {
             let address_params = get_address_params(&network);
 
             // 1. Get address info and pubkey from DB
@@ -303,24 +310,40 @@ fn create_spend_confirm_callback(
             println!("  Source address: {}", source_address);
             println!("  Total UTXOs: {}", utxos.len());
             for (i, u) in utxos.iter().enumerate() {
-                println!("  UTXO[{}]: txid={}, vout={}, amount={} sats, asset={}",
-                    i, u.txid, u.vout, u.amount, &u.asset[..16]);
+                println!(
+                    "  UTXO[{}]: txid={}, vout={}, amount={} sats, asset={}",
+                    i,
+                    u.txid,
+                    u.vout,
+                    u.amount,
+                    &u.asset[..16]
+                );
             }
-            println!("  Using UTXO[0] with {} sats for this spend", utxos[0].amount);
+            println!(
+                "  Using UTXO[0] with {} sats for this spend",
+                utxos[0].amount
+            );
             println!("================================");
 
             // 3. Calculate spend preview to get fee and change info
             // Only use the first UTXO (we spend one UTXO at a time for simplicity)
-            let preview = calculate_spend_preview(&source_address, &destination, amount_sats, &utxos[..1])
-                .map_err(|e| format!("Preview calculation failed: {}", e))?;
-            
+            let preview =
+                calculate_spend_preview(&source_address, &destination, amount_sats, &utxos[..1])
+                    .map_err(|e| format!("Preview calculation failed: {}", e))?;
+
             // Log the preview
             println!("=== SPEND PREVIEW ===");
             println!("  Requested amount: {} sats", amount_sats);
             println!("  Calculated fee:   {} sats", preview.fee);
-            println!("  Change amount:    {} sats (has_change={})", preview.change_amount, preview.has_change);
+            println!(
+                "  Change amount:    {} sats (has_change={})",
+                preview.change_amount, preview.has_change
+            );
             println!("  Total input:      {} sats", preview.total_input);
-            println!("  Sum of outputs:   {} sats", amount_sats + preview.fee + preview.change_amount);
+            println!(
+                "  Sum of outputs:   {} sats",
+                amount_sats + preview.fee + preview.change_amount
+            );
             println!("=====================");
 
             // 4. Deploy change address if needed
@@ -345,7 +368,9 @@ fn create_spend_confirm_callback(
                 .map_err(|e| format!("Failed to store change address: {}", e))?;
 
                 // Import change address to Elements wallet for balance tracking
-                if let Err(e) = rpc_client.import_address(&change_deployed.address, Some("samplicity"), false) {
+                if let Err(e) =
+                    rpc_client.import_address(&change_deployed.address, Some("samplicity"), false)
+                {
                     eprintln!("Warning: Failed to import change address to wallet: {}", e);
                     // Continue anyway - address is stored, balance polling may be delayed
                 }
@@ -358,7 +383,8 @@ fn create_spend_confirm_callback(
 
             // 5. Get genesis hash for testnet (we'll use a hardcoded value for now)
             // Liquid Testnet genesis hash
-            let genesis_hash_hex = "a771da8e52ee6ad581ed1e9a99825e5b3b7992225534eaa2ae23244fe26ab1c1";
+            let genesis_hash_hex =
+                "a771da8e52ee6ad581ed1e9a99825e5b3b7992225534eaa2ae23244fe26ab1c1";
             let genesis_hash = musk::elements::BlockHash::from_str(genesis_hash_hex)
                 .map_err(|e| format!("Invalid genesis hash: {}", e))?;
 
@@ -368,8 +394,9 @@ fn create_spend_confirm_callback(
                 .try_into()
                 .map_err(|_| "Invalid pk_hash length")?;
 
-            let source_script = get_script_pubkey_for_pk_hash(&program_path, &pk_hash_bytes, address_params)
-                .map_err(|e| format!("Failed to get source script: {}", e))?;
+            let source_script =
+                get_script_pubkey_for_pk_hash(&program_path, &pk_hash_bytes, address_params)
+                    .map_err(|e| format!("Failed to get source script: {}", e))?;
 
             // 7. Create spend orchestrator and execute
             let orchestrator = SpendOrchestrator::new(&program_path, address_params, genesis_hash);
@@ -390,12 +417,17 @@ fn create_spend_confirm_callback(
 
             // 8. Broadcast transaction via Elements node RPC
             let tx_hex = transaction_to_hex(&tx);
-            println!("Broadcasting transaction ({} bytes): {}", tx_hex.len() / 2, &tx_hex[..100.min(tx_hex.len())]);
+            println!(
+                "Broadcasting transaction ({} bytes): {}",
+                tx_hex.len() / 2,
+                &tx_hex[..100.min(tx_hex.len())]
+            );
             println!("Full tx hex for debugging: {}", tx_hex);
 
             // Use the Elements RPC client to broadcast (synchronous, immediate response)
             let rpc = rpc_client.clone();
-            let txid = rpc.broadcast(&tx)
+            let txid = rpc
+                .broadcast(&tx)
                 .map_err(|e| {
                     eprintln!("Broadcast error from Elements RPC: {}", e);
                     format!("Broadcast failed: {}", e)
@@ -424,7 +456,7 @@ async fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".parse().unwrap())
+                .unwrap_or_else(|_| "info".parse().unwrap()),
         )
         .init();
 
@@ -441,13 +473,16 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to load musk.conf - make sure it exists and has valid RPC settings");
     let rpc_client = Arc::new(
         RpcClient::new(rpc_config)
-            .expect("Failed to create RPC client - check Elements node is running")
+            .expect("Failed to create RPC client - check Elements node is running"),
     );
     println!("RPC client created for transaction broadcasting");
 
     // Import existing addresses to Elements wallet (no rescan since they're likely recent)
     if let Ok(existing_addrs) = db.get_all_addresses() {
-        println!("Importing {} existing addresses to Elements wallet...", existing_addrs.len());
+        println!(
+            "Importing {} existing addresses to Elements wallet...",
+            existing_addrs.len()
+        );
         for addr in existing_addrs {
             if let Err(e) = rpc_client.import_address(&addr.address, Some("samplicity"), false) {
                 eprintln!("  Warning: Failed to import {}: {}", &addr.address[..20], e);

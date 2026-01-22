@@ -351,10 +351,15 @@ pub struct SpendPreviewData {
 }
 
 /// Callback type for spend preview requests
-pub type SpendPreviewCallback = Box<dyn Fn(String, String, u64) -> Option<SpendPreviewData> + Send + Sync>;
+pub type SpendPreviewCallback =
+    Box<dyn Fn(String, String, u64) -> Option<SpendPreviewData> + Send + Sync>;
 
 /// Callback type for spend confirm requests  
-pub type SpendConfirmCallback = Box<dyn Fn(String, String, u64) -> Result<(String, Option<String>, Option<u64>, u64), String> + Send + Sync>;
+pub type SpendConfirmCallback = Box<
+    dyn Fn(String, String, u64) -> Result<(String, Option<String>, Option<u64>, u64), String>
+        + Send
+        + Sync,
+>;
 
 /// Broadcaster actor that manages all WebSocket sessions
 pub struct WsBroadcaster {
@@ -455,7 +460,11 @@ impl Handler<SpendPreviewRequest> for WsBroadcaster {
 
     fn handle(&mut self, msg: SpendPreviewRequest, _: &mut Self::Context) {
         let response = if let Some(callback) = &self.spend_preview_callback {
-            match callback(msg.source_address.clone(), msg.destination.clone(), msg.amount_sats) {
+            match callback(
+                msg.source_address.clone(),
+                msg.destination.clone(),
+                msg.amount_sats,
+            ) {
                 Some(preview) => ServerMessage::SpendPreviewResult {
                     source_address: preview.source_address.clone(),
                     destination: preview.destination.clone(),
@@ -484,7 +493,11 @@ impl Handler<SpendConfirmRequest> for WsBroadcaster {
 
     fn handle(&mut self, msg: SpendConfirmRequest, _: &mut Self::Context) {
         let response = if let Some(callback) = &self.spend_confirm_callback {
-            match callback(msg.source_address.clone(), msg.destination.clone(), msg.amount_sats) {
+            match callback(
+                msg.source_address.clone(),
+                msg.destination.clone(),
+                msg.amount_sats,
+            ) {
                 Ok((txid, change_address, change_amount, fee)) => {
                     // Broadcast success to all clients
                     self.broadcast(ServerMessage::SpendSuccess {

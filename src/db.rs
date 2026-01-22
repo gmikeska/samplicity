@@ -320,9 +320,13 @@ impl Database {
     }
 
     /// Remove UTXOs that no longer exist (for cleanup during sync)
-    pub fn remove_utxos_not_in_list(&self, address_id: i64, keep_utxos: &[(String, u32)]) -> Result<usize> {
+    pub fn remove_utxos_not_in_list(
+        &self,
+        address_id: i64,
+        keep_utxos: &[(String, u32)],
+    ) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
-        
+
         if keep_utxos.is_empty() {
             // Remove all UTXOs for this address
             let removed = conn.execute(
@@ -415,10 +419,7 @@ impl Database {
         )?;
 
         // Delete the address
-        conn.execute(
-            "DELETE FROM addresses WHERE id = ?1",
-            params![address_id],
-        )?;
+        conn.execute("DELETE FROM addresses WHERE id = ?1", params![address_id])?;
 
         // Check if the pubkey is still referenced by any other address
         let pubkey_in_use: i64 = conn
@@ -431,10 +432,7 @@ impl Database {
 
         // If no other address uses this pubkey, delete it
         if pubkey_in_use == 0 {
-            conn.execute(
-                "DELETE FROM pubkeys WHERE id = ?1",
-                params![pubkey_id],
-            )?;
+            conn.execute("DELETE FROM pubkeys WHERE id = ?1", params![pubkey_id])?;
         }
 
         Ok(true)

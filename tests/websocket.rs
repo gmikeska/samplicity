@@ -297,4 +297,3 @@ fn test_client_message_missing_fields() {
     let result = serde_json::from_str::<ClientMessage>(incomplete);
     assert!(result.is_err());
 }
-

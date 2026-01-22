@@ -6,7 +6,9 @@
 use bip39::Mnemonic;
 use musk::elements::{self, Address, Script};
 use musk::simplicityhl::num::U256;
-use musk::{Arguments, InstantiatedProgram, Program, SpendBuilder, Value, ValueConstructible, WitnessName};
+use musk::{
+    Arguments, InstantiatedProgram, Program, SpendBuilder, Value, ValueConstructible, WitnessName,
+};
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -41,7 +43,10 @@ pub enum SpendError {
 impl std::fmt::Display for SpendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SpendError::InsufficientFunds { available, required } => {
+            SpendError::InsufficientFunds {
+                available,
+                required,
+            } => {
                 write!(
                     f,
                     "Insufficient funds: have {} sats, need {} sats",
@@ -113,29 +118,32 @@ pub fn derive_secret_key_from_mnemonic(mnemonic_phrase: &str) -> Result<[u8; 32]
 /// Sign a message using Schnorr signature with actual secret key bytes
 ///
 /// This is different from musk's util::sign_schnorr which only takes u32
-pub fn sign_schnorr_with_bytes(secret_key: &[u8; 32], message: [u8; 32]) -> Result<[u8; 64], SpendError> {
+pub fn sign_schnorr_with_bytes(
+    secret_key: &[u8; 32],
+    message: [u8; 32],
+) -> Result<[u8; 64], SpendError> {
     let secp = Secp256k1::new();
-    
+
     let sk = SecretKey::from_slice(secret_key)
         .map_err(|e| SpendError::SigningError(format!("Invalid secret key: {}", e)))?;
-    
+
     let keypair = Keypair::from_secret_key(&secp, &sk);
     let msg = Message::from_digest(message);
     let signature = keypair.sign_schnorr(msg);
-    
+
     Ok(signature.serialize())
 }
 
 /// Get the x-only public key from a secret key
 pub fn get_xonly_pubkey(secret_key: &[u8; 32]) -> Result<[u8; 32], SpendError> {
     let secp = Secp256k1::new();
-    
+
     let sk = SecretKey::from_slice(secret_key)
         .map_err(|e| SpendError::SigningError(format!("Invalid secret key: {}", e)))?;
-    
+
     let keypair = Keypair::from_secret_key(&secp, &sk);
     let (xonly, _parity) = keypair.x_only_public_key();
-    
+
     Ok(xonly.serialize())
 }
 
@@ -304,7 +312,7 @@ pub fn build_and_sign_transaction(
     // === VERIFICATION: Prove input == outputs ===
     let input_amount = utxo.amount;
     let total_outputs = amount + fee + change_amount;
-    
+
     println!("=== TRANSACTION VALUE VERIFICATION ===");
     println!("  INPUT:  UTXO amount from DB = {} sats", input_amount);
     println!("  OUTPUT: Destination amount  = {} sats", amount);
@@ -312,14 +320,17 @@ pub fn build_and_sign_transaction(
     println!("  OUTPUT: Fee amount          = {} sats", fee);
     println!("  TOTAL:  Sum of outputs      = {} sats", total_outputs);
     println!("  UTXO:   txid={}, vout={}", utxo.txid, utxo.vout);
-    
+
     if input_amount != total_outputs {
         let diff = if input_amount > total_outputs {
             input_amount - total_outputs
         } else {
             total_outputs - input_amount
         };
-        eprintln!("  *** MISMATCH! Input != Outputs (diff = {} sats) ***", diff);
+        eprintln!(
+            "  *** MISMATCH! Input != Outputs (diff = {} sats) ***",
+            diff
+        );
         return Err(SpendError::ProgramError(format!(
             "Value mismatch: input={} but outputs sum to {} (diff={})",
             input_amount, total_outputs, diff
@@ -327,7 +338,7 @@ pub fn build_and_sign_transaction(
     }
     println!("  [OK] Values match: {} == {}", input_amount, total_outputs);
     println!("=======================================");
-    
+
     // 1. Load and instantiate the program
     let program = load_p2pkh_program(program_path, source_pk_hash)?;
 
@@ -354,7 +365,8 @@ pub fn build_and_sign_transaction(
     builder.add_fee(fee, asset_id);
 
     // 8. Compute sighash
-    let sighash = builder.sighash_all()
+    let sighash = builder
+        .sighash_all()
         .map_err(|e| SpendError::SigningError(format!("Failed to compute sighash: {}", e)))?;
 
     // 9. Derive secret key from mnemonic
@@ -370,7 +382,8 @@ pub fn build_and_sign_transaction(
     let witness_values = build_witness_values(&pubkey, &signature);
 
     // 13. Finalize and return the transaction
-    builder.finalize(witness_values)
+    builder
+        .finalize(witness_values)
         .map_err(|e| SpendError::SigningError(format!("Failed to finalize transaction: {}", e)))
 }
 
@@ -448,7 +461,9 @@ impl SpendOrchestrator {
                 let change_addr = parse_address(change_addr_str, self.address_params)?;
                 Some(change_addr.script_pubkey())
             } else {
-                return Err(SpendError::ProgramError("Change address required but not provided".into()));
+                return Err(SpendError::ProgramError(
+                    "Change address required but not provided".into(),
+                ));
             }
         } else {
             None
@@ -477,6 +492,7 @@ impl SpendOrchestrator {
 pub fn transaction_to_hex(tx: &elements::Transaction) -> String {
     use elements::encode::Encodable;
     let mut buf = Vec::new();
-    tx.consensus_encode(&mut buf).expect("Encoding should not fail");
+    tx.consensus_encode(&mut buf)
+        .expect("Encoding should not fail");
     hex::encode(buf)
 }

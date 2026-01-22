@@ -44,7 +44,9 @@ fn test_delete_address() {
 
     // Create address with UTXOs
     let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash", "mnemonic").unwrap();
-    let addr_id = db.insert_address("addr_to_delete", pubkey_id, &[2u8; 32]).unwrap();
+    let addr_id = db
+        .insert_address("addr_to_delete", pubkey_id, &[2u8; 32])
+        .unwrap();
     db.upsert_utxo(addr_id, "txid1", 0, 100000, "lbtc").unwrap();
 
     // Verify address exists
@@ -77,7 +79,9 @@ fn test_delete_address_preserves_shared_pubkey() {
     let db = Database::open_in_memory().unwrap();
 
     // Create one pubkey shared by two addresses
-    let pubkey_id = db.insert_pubkey(&[1u8; 32], "shared_hash", "shared_mnemonic").unwrap();
+    let pubkey_id = db
+        .insert_pubkey(&[1u8; 32], "shared_hash", "shared_mnemonic")
+        .unwrap();
     db.insert_address("addr1", pubkey_id, &[2u8; 32]).unwrap();
     db.insert_address("addr2", pubkey_id, &[3u8; 32]).unwrap();
 
@@ -96,7 +100,9 @@ fn test_get_address_id() {
     let db = Database::open_in_memory().unwrap();
 
     let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash", "mnemonic").unwrap();
-    let expected_id = db.insert_address("test_addr", pubkey_id, &[2u8; 32]).unwrap();
+    let expected_id = db
+        .insert_address("test_addr", pubkey_id, &[2u8; 32])
+        .unwrap();
 
     let addr_id = db.get_address_id("test_addr").unwrap();
     assert!(addr_id.is_some());
@@ -116,7 +122,9 @@ fn test_get_unspent_utxos_by_id() {
     let db = Database::open_in_memory().unwrap();
 
     let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash", "mnemonic").unwrap();
-    let addr_id = db.insert_address("test_addr", pubkey_id, &[2u8; 32]).unwrap();
+    let addr_id = db
+        .insert_address("test_addr", pubkey_id, &[2u8; 32])
+        .unwrap();
 
     // Insert UTXOs
     db.upsert_utxo(addr_id, "txid1", 0, 100000, "lbtc").unwrap();
@@ -133,7 +141,9 @@ fn test_remove_utxos_empty_keep_list() {
     let db = Database::open_in_memory().unwrap();
 
     let pubkey_id = db.insert_pubkey(&[1u8; 32], "hash", "mnemonic").unwrap();
-    let addr_id = db.insert_address("test_addr", pubkey_id, &[2u8; 32]).unwrap();
+    let addr_id = db
+        .insert_address("test_addr", pubkey_id, &[2u8; 32])
+        .unwrap();
 
     // Insert UTXOs
     db.upsert_utxo(addr_id, "txid1", 0, 100000, "lbtc").unwrap();
@@ -256,4 +266,3 @@ fn test_utxo_sync() {
     assert!(txids.contains(&"txid3"));
     assert!(!txids.contains(&"txid1"));
 }
-

@@ -47,7 +47,9 @@ fn test_deploy_error_display() {
     assert!(key_gen_error.to_string().contains("test key error"));
 
     let program_load_error = DeployError::ProgramLoad("test load error".to_string());
-    assert!(program_load_error.to_string().contains("Program load error"));
+    assert!(program_load_error
+        .to_string()
+        .contains("Program load error"));
     assert!(program_load_error.to_string().contains("test load error"));
 
     let compilation_error = DeployError::Compilation("test compile error".to_string());
@@ -60,7 +62,11 @@ fn test_deploy_new_address() {
     let address_params = get_address_params("regtest");
 
     let result = deploy_new_address(P2PKH_PROGRAM_PATH, address_params);
-    assert!(result.is_ok(), "deploy_new_address failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "deploy_new_address failed: {:?}",
+        result.err()
+    );
 
     let deployed = result.unwrap();
 
@@ -79,7 +85,11 @@ fn test_deploy_new_address() {
 
     // Verify mnemonic has 12 words
     let word_count = deployed.mnemonic.split_whitespace().count();
-    assert_eq!(word_count, 12, "Expected 12-word mnemonic, got {} words", word_count);
+    assert_eq!(
+        word_count, 12,
+        "Expected 12-word mnemonic, got {} words",
+        word_count
+    );
 
     // Verify pk_hash is actually SHA256 of pubkey
     let mut hasher = Sha256::new();
@@ -94,7 +104,11 @@ fn test_deploy_change_address() {
     let address_params = get_address_params("testnet");
 
     let result = deploy_change_address(P2PKH_PROGRAM_PATH, address_params);
-    assert!(result.is_ok(), "deploy_change_address failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "deploy_change_address failed: {:?}",
+        result.err()
+    );
 
     let deployed = result.unwrap();
 
@@ -117,7 +131,11 @@ fn test_get_script_pubkey_for_pk_hash() {
     let pk_hash: [u8; 32] = hasher.finalize().into();
 
     let result = get_script_pubkey_for_pk_hash(P2PKH_PROGRAM_PATH, &pk_hash, address_params);
-    assert!(result.is_ok(), "get_script_pubkey_for_pk_hash failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "get_script_pubkey_for_pk_hash failed: {:?}",
+        result.err()
+    );
 
     let script = result.unwrap();
 
