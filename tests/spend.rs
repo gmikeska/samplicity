@@ -31,7 +31,7 @@ fn test_derive_secret_key_invalid_mnemonic() {
         SpendError::InvalidMnemonic(msg) => {
             assert!(msg.contains("mnemonic"));
         }
-        other => panic!("Expected InvalidMnemonic error, got: {:?}", other),
+        other => panic!("Expected InvalidMnemonic error, got: {other:?}"),
     }
 }
 
@@ -121,7 +121,7 @@ fn test_calculate_spend_preview_with_change() {
         address_id: 1,
         txid: "abc".to_string(),
         vout: 0,
-        amount: 100000, // 100k sats
+        amount: 100_000, // 100k sats
         asset: LBTC_TESTNET_ASSET_ID.to_string(),
         spent: false,
     }];
@@ -130,7 +130,7 @@ fn test_calculate_spend_preview_with_change() {
     assert_eq!(preview.amount, 50000);
     assert_eq!(preview.fee, DEFAULT_FEE_SATS);
     assert!(preview.has_change);
-    assert_eq!(preview.change_amount, 100000 - 50000 - DEFAULT_FEE_SATS);
+    assert_eq!(preview.change_amount, 100_000 - 50_000 - DEFAULT_FEE_SATS);
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn test_stored_utxo_to_musk_utxo() {
         address_id: 1,
         txid: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string(),
         vout: 0,
-        amount: 100000,
+        amount: 100_000,
         asset: LBTC_TESTNET_ASSET_ID.to_string(),
         spent: false,
     };
@@ -258,7 +258,7 @@ fn test_stored_utxo_to_musk_utxo() {
     );
 
     let utxo = result.unwrap();
-    assert_eq!(utxo.amount, 100000);
+    assert_eq!(utxo.amount, 100_000);
     assert_eq!(utxo.vout, 0);
 }
 
@@ -289,9 +289,8 @@ fn test_dust_threshold_constant() {
 
 #[test]
 fn test_default_fee_constant() {
-    // Verify default fee is reasonable
-    assert!(DEFAULT_FEE_SATS > 0);
-    assert!(DEFAULT_FEE_SATS < 10000); // Less than 10k sats
+    // Verify default fee is reasonable (500 sats)
+    assert_eq!(DEFAULT_FEE_SATS, 500);
 }
 
 #[test]
@@ -325,6 +324,6 @@ fn test_spend_preview_total_input() {
         },
     ];
 
-    let preview = calculate_spend_preview("src", "dst", 10000, &utxos).unwrap();
-    assert_eq!(preview.total_input, 100000);
+    let preview = calculate_spend_preview("src", "dst", 10_000, &utxos).unwrap();
+    assert_eq!(preview.total_input, 100_000);
 }

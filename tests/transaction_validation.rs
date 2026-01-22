@@ -7,7 +7,7 @@
 //! These tests use existing UTXOs from the samplicity database and do NOT
 //! broadcast transactions, so they are safe to run repeatedly.
 //!
-//! Run with: cargo test --test transaction_validation -- --ignored
+//! Run with: `cargo test --test transaction_validation -- --ignored`
 
 use musk::RpcClient;
 use samplicity::deploy::{deploy_new_address, AddressType};
@@ -94,7 +94,7 @@ fn test_decode_raw_transaction_structure() {
         .try_into()
         .expect("Invalid pk_hash length");
 
-    println!("Using source address: {}", source_address);
+    println!("Using source address: {source_address}");
     println!(
         "UTXO: txid={}, vout={}, amount={} sats",
         utxos[0].txid, utxos[0].vout, utxos[0].amount
@@ -181,8 +181,9 @@ fn test_decode_raw_transaction_structure() {
 
     // Verify input references our UTXO
     let input = &vin_arr[0];
-    let input_txid = input.get("txid").and_then(|v| v.as_str()).unwrap();
-    let input_vout = input.get("vout").and_then(|v| v.as_u64()).unwrap() as u32;
+    let input_txid = input.get("txid").and_then(serde_json::Value::as_str).unwrap();
+    #[allow(clippy::cast_possible_truncation)]
+    let input_vout = input.get("vout").and_then(serde_json::Value::as_u64).unwrap() as u32;
     assert_eq!(input_txid, utxos[0].txid, "Input should reference our UTXO");
     assert_eq!(input_vout, utxos[0].vout, "Input vout should match");
 
@@ -191,8 +192,7 @@ fn test_decode_raw_transaction_structure() {
     assert_eq!(
         vout_arr.len(),
         expected_outputs,
-        "Should have {} outputs",
-        expected_outputs
+        "Should have {expected_outputs} outputs"
     );
 
     println!("\n=== TRANSACTION STRUCTURE VALIDATED ===");
@@ -227,7 +227,7 @@ fn test_mempool_accept_validates_spend() {
         .try_into()
         .expect("Invalid pk_hash length");
 
-    println!("Using source address: {}", source_address);
+    println!("Using source address: {source_address}");
     println!(
         "UTXO: txid={}, vout={}, amount={} sats",
         utxos[0].txid, utxos[0].vout, utxos[0].amount
@@ -295,7 +295,7 @@ fn test_mempool_accept_validates_spend() {
     let result = &mempool_result[0];
     let allowed = result
         .get("allowed")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     if allowed {
@@ -304,11 +304,10 @@ fn test_mempool_accept_validates_spend() {
     } else {
         let reject_reason = result
             .get("reject-reason")
-            .and_then(|v| v.as_str())
+            .and_then(serde_json::Value::as_str)
             .unwrap_or("unknown");
         panic!(
-            "Transaction REJECTED by mempool: {}\nThis indicates a bug in transaction construction.",
-            reject_reason
+            "Transaction REJECTED by mempool: {reject_reason}\nThis indicates a bug in transaction construction."
         );
     }
 }
@@ -402,8 +401,8 @@ fn test_transaction_roundtrip_decode() {
     );
 
     // Verify version and locktime
-    let version = decoded.get("version").and_then(|v| v.as_u64()).unwrap();
-    let locktime = decoded.get("locktime").and_then(|v| v.as_u64()).unwrap();
+    let version = decoded.get("version").and_then(serde_json::Value::as_u64).unwrap();
+    let locktime = decoded.get("locktime").and_then(serde_json::Value::as_u64).unwrap();
 
     assert_eq!(version, 2, "Transaction version should be 2");
     assert_eq!(locktime, 0, "Locktime should be 0");
@@ -487,14 +486,12 @@ fn test_verify_output_values() {
     // Extract output values
     let vout = decoded.get("vout").and_then(|v| v.as_array()).unwrap();
 
-    println!("Input amount: {} sats", input_amount);
-    println!("Expected send: {} sats", SEND_AMOUNT);
+    println!("Input amount: {input_amount} sats");
+    println!("Expected send: {SEND_AMOUNT} sats");
     println!("Expected fee: {} sats", preview.fee);
     println!("Expected change: {} sats", preview.change_amount);
-    println!(
-        "Expected total outputs: {} sats",
-        SEND_AMOUNT + preview.fee + preview.change_amount
-    );
+    let expected_total = SEND_AMOUNT + preview.fee + preview.change_amount;
+    println!("Expected total outputs: {expected_total} sats");
     println!("\nDecoded outputs:");
 
     let mut total_output_value: u64 = 0;
@@ -502,30 +499,27 @@ fn test_verify_output_values() {
 
     for (i, output) in vout.iter().enumerate() {
         // Get value - may be explicit or blinded
-        let value = if let Some(v) = output.get("value").and_then(|v| v.as_f64()) {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let sats = (v * 100_000_000.0).round() as u64;
-            sats
-        } else {
-            0 // Confidential output
-        };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let value = output
+            .get("value")
+            .and_then(serde_json::Value::as_f64)
+            .map_or(0, |v| (v * 100_000_000.0).round() as u64);
 
         // Check if this is a fee output (empty scriptPubKey)
         let script_hex = output
             .get("scriptPubKey")
             .and_then(|sp| sp.get("hex"))
-            .and_then(|v| v.as_str())
+            .and_then(serde_json::Value::as_str)
             .unwrap_or("");
 
         let is_fee = script_hex.is_empty() || script_hex == "6a";
 
         if is_fee {
-            println!("  Output {i}: FEE = {} sats", value);
+            println!("  Output {i}: FEE = {value} sats");
             found_fee = true;
         } else {
             println!(
-                "  Output {i}: {} sats (script: {}...)",
-                value,
+                "  Output {i}: {value} sats (script: {}...)",
                 &script_hex[..script_hex.len().min(20)]
             );
         }
@@ -533,10 +527,7 @@ fn test_verify_output_values() {
         total_output_value += value;
     }
 
-    println!(
-        "\nTotal output value (including fee output): {} sats",
-        total_output_value
-    );
+    println!("\nTotal output value (including fee output): {total_output_value} sats");
 
     // Verify conservation of value - fee is already included in outputs
     assert_eq!(
@@ -548,8 +539,8 @@ fn test_verify_output_values() {
 
     println!("\n✓ Output values validated successfully");
     println!(
-        "✓ Conservation of value verified: {} = {} + {} + {}",
-        input_amount, SEND_AMOUNT, preview.change_amount, preview.fee
+        "✓ Conservation of value verified: {input_amount} = {SEND_AMOUNT} + {} + {}",
+        preview.change_amount, preview.fee
     );
 }
 
@@ -809,7 +800,7 @@ fn test_spend_from_confidential_address_uses_confidential_change() {
     let allowed = mempool_result
         .first()
         .and_then(|r| r.get("allowed"))
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     assert!(allowed, "Transaction should be accepted by mempool");

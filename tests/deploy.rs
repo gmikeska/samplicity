@@ -14,9 +14,9 @@ fn test_sha256_computation() {
     // Test that SHA256 computation matches expected format
     let test_bytes = [0u8; 32];
     let mut hasher = Sha256::new();
-    hasher.update(&test_bytes);
+    hasher.update(test_bytes);
     let result: [u8; 32] = hasher.finalize().into();
-    let hex_result = hex::encode(&result);
+    let hex_result = hex::encode(result);
 
     // SHA256 of 32 zero bytes
     assert_eq!(hex_result.len(), 64);
@@ -87,13 +87,12 @@ fn test_deploy_new_address_explicit() {
     let word_count = deployed.mnemonic.split_whitespace().count();
     assert_eq!(
         word_count, 12,
-        "Expected 12-word mnemonic, got {} words",
-        word_count
+        "Expected 12-word mnemonic, got {word_count} words"
     );
 
     // Verify pk_hash is actually SHA256 of pubkey
     let mut hasher = Sha256::new();
-    hasher.update(&deployed.pubkey);
+    hasher.update(deployed.pubkey);
     let computed_hash = hex::encode(hasher.finalize());
     assert_eq!(deployed.pk_hash, computed_hash);
 
@@ -165,7 +164,7 @@ fn test_get_script_pubkey_for_pk_hash() {
     // Create a test pk_hash (SHA256 of some data)
     let test_pubkey = [42u8; 32];
     let mut hasher = Sha256::new();
-    hasher.update(&test_pubkey);
+    hasher.update(test_pubkey);
     let pk_hash: [u8; 32] = hasher.finalize().into();
 
     let result = get_script_pubkey_for_pk_hash(P2PKH_PROGRAM_PATH, &pk_hash, address_params);
@@ -196,6 +195,6 @@ fn test_deploy_with_invalid_program_path() {
         DeployError::ProgramLoad(msg) => {
             assert!(msg.contains("Failed to load program"));
         }
-        other => panic!("Expected ProgramLoad error, got: {:?}", other),
+        other => panic!("Expected ProgramLoad error, got: {other:?}"),
     }
 }

@@ -94,7 +94,7 @@ fn test_server_message_serialization_new_address() {
 fn test_server_message_serialization_balance_update() {
     let msg = ServerMessage::BalanceUpdate {
         address: "test_address".to_string(),
-        balance: 100000,
+        balance: 100_000,
     };
     let json = serde_json::to_string(&msg).unwrap();
 
@@ -148,7 +148,7 @@ fn test_server_message_serialization_spend_preview_result() {
         fee: 500,
         change_amount: 49500,
         has_change: true,
-        total_input: 100000,
+        total_input: 100_000,
     };
     let json = serde_json::to_string(&msg).unwrap();
 
@@ -273,7 +273,8 @@ fn test_server_message_clone() {
         pk_hash: "hash".to_string(),
     };
 
-    let cloned = msg.clone();
+    // Test that Clone works by using the cloned value
+    let cloned = msg;
     match cloned {
         ServerMessage::NewAddress { address, pk_hash } => {
             assert_eq!(address, "addr");

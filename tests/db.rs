@@ -47,7 +47,7 @@ fn test_delete_address() {
     let addr_id = db
         .insert_address("addr_to_delete", pubkey_id, &[2u8; 32])
         .unwrap();
-    db.upsert_utxo(addr_id, "txid1", 0, 100000, "lbtc").unwrap();
+    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc").unwrap();
 
     // Verify address exists
     let addr = db.get_address("addr_to_delete").unwrap();
@@ -127,13 +127,13 @@ fn test_get_unspent_utxos_by_id() {
         .unwrap();
 
     // Insert UTXOs
-    db.upsert_utxo(addr_id, "txid1", 0, 100000, "lbtc").unwrap();
+    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc").unwrap();
     db.upsert_utxo(addr_id, "txid2", 1, 50000, "lbtc").unwrap();
 
     // Get UTXOs by address ID
     let utxos = db.get_unspent_utxos_by_id(addr_id).unwrap();
     assert_eq!(utxos.len(), 2);
-    assert_eq!(utxos.iter().map(|u| u.amount).sum::<u64>(), 150000);
+    assert_eq!(utxos.iter().map(|u| u.amount).sum::<u64>(), 150_000);
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn test_remove_utxos_empty_keep_list() {
         .unwrap();
 
     // Insert UTXOs
-    db.upsert_utxo(addr_id, "txid1", 0, 100000, "lbtc").unwrap();
+    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc").unwrap();
     db.upsert_utxo(addr_id, "txid2", 1, 50000, "lbtc").unwrap();
 
     // Remove all UTXOs by passing empty keep list
@@ -193,15 +193,15 @@ fn test_balance_update() {
     assert_eq!(addr.balance, 0);
 
     // Update balance
-    let changed = db.update_balance("addr1", 100000).unwrap();
+    let changed = db.update_balance("addr1", 100_000).unwrap();
     assert!(changed);
 
     // Verify update
     let addr = db.get_address("addr1").unwrap().unwrap();
-    assert_eq!(addr.balance, 100000);
+    assert_eq!(addr.balance, 100_000);
 
     // Same balance should not report change
-    let changed = db.update_balance("addr1", 100000).unwrap();
+    let changed = db.update_balance("addr1", 100_000).unwrap();
     assert!(!changed);
 }
 
@@ -214,7 +214,7 @@ fn test_utxo_operations() {
     let addr_id = db.insert_address("addr1", pubkey_id, &[2u8; 32]).unwrap();
 
     // Insert UTXOs
-    db.upsert_utxo(addr_id, "txid1", 0, 100000, "lbtc_asset")
+    db.upsert_utxo(addr_id, "txid1", 0, 100_000, "lbtc_asset")
         .unwrap();
     db.upsert_utxo(addr_id, "txid2", 1, 50000, "lbtc_asset")
         .unwrap();
@@ -222,7 +222,7 @@ fn test_utxo_operations() {
     // Get unspent UTXOs
     let utxos = db.get_unspent_utxos("addr1").unwrap();
     assert_eq!(utxos.len(), 2);
-    assert_eq!(utxos.iter().map(|u| u.amount).sum::<u64>(), 150000);
+    assert_eq!(utxos.iter().map(|u| u.amount).sum::<u64>(), 150_000);
 
     // Mark one as spent
     let marked = db.mark_utxo_spent("txid1", 0).unwrap();
@@ -244,7 +244,7 @@ fn test_utxo_sync() {
 
     // Initial sync
     let utxos = vec![
-        ("txid1".to_string(), 0u32, 100000u64, "lbtc".to_string()),
+        ("txid1".to_string(), 0u32, 100_000_u64, "lbtc".to_string()),
         ("txid2".to_string(), 1u32, 50000u64, "lbtc".to_string()),
     ];
     db.sync_utxos("addr1", &utxos).unwrap();

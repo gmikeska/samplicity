@@ -30,6 +30,7 @@ pub fn detect_address_type(address: &str) -> AddressType {
 
 /// Result of deploying a new address
 #[derive(Debug)]
+#[allow(dead_code)] // Fields reserved for future confidential transaction support
 pub struct DeployedAddress {
     /// The taproot address string
     pub address: String,
