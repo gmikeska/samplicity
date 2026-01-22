@@ -302,16 +302,15 @@ fn create_spend_preview_callback(
             }
         };
 
-        // Sort by amount descending so we use the largest UTXO first
+        // Sort by amount descending (largest first)
         utxos.sort_by(|a, b| b.amount.cmp(&a.amount));
 
-        // Calculate preview using only the largest UTXO
-        // (we only spend one UTXO at a time for simplicity)
+        // Calculate preview using ALL UTXOs (drains address to prevent reuse)
         if utxos.is_empty() {
             eprintln!("No UTXOs available for preview");
             return None;
         }
-        match calculate_spend_preview(&source_address, &destination, amount_sats, &utxos[..1]) {
+        match calculate_spend_preview(&source_address, &destination, amount_sats, &utxos) {
             Ok(preview) => Some(SpendPreviewData {
                 source_address: preview.source_address,
                 destination: preview.destination,
@@ -487,14 +486,14 @@ fn create_spend_confirm_callback(
             let orchestrator = SpendOrchestrator::new(&program_path, address_params, genesis_hash)
                 .with_rpc_client(rpc_client.clone());
 
-            // Only use the first UTXO (we spend one UTXO at a time)
+            // Use ALL UTXOs to drain the address completely (prevents address reuse)
             let (tx, _) = orchestrator
                 .execute_spend(
                     &source_address,
                     &source_script,
                     &pk_hash_bytes,
                     &pubkey_info.mnemonic,
-                    &utxos[..1],
+                    &utxos,
                     &destination,
                     amount_sats,
                     change_address_str.as_deref(),
