@@ -2,7 +2,7 @@
 
 use samplicity::deploy::{
     deploy_change_address, deploy_new_address, get_address_params, get_script_pubkey_for_pk_hash,
-    DeployError,
+    AddressType, DeployError,
 };
 use sha2::{Digest, Sha256};
 
@@ -58,10 +58,10 @@ fn test_deploy_error_display() {
 }
 
 #[test]
-fn test_deploy_new_address() {
+fn test_deploy_new_address_explicit() {
     let address_params = get_address_params("regtest");
 
-    let result = deploy_new_address(P2PKH_PROGRAM_PATH, address_params);
+    let result = deploy_new_address(P2PKH_PROGRAM_PATH, address_params, AddressType::Explicit);
     assert!(
         result.is_ok(),
         "deploy_new_address failed: {:?}",
@@ -70,7 +70,7 @@ fn test_deploy_new_address() {
 
     let deployed = result.unwrap();
 
-    // Verify address starts with correct prefix for regtest
+    // Verify address starts with correct prefix for regtest explicit
     assert!(
         deployed.address.starts_with("ert1p"),
         "Expected regtest taproot address starting with ert1p, got: {}",
@@ -96,6 +96,40 @@ fn test_deploy_new_address() {
     hasher.update(&deployed.pubkey);
     let computed_hash = hex::encode(hasher.finalize());
     assert_eq!(deployed.pk_hash, computed_hash);
+
+    // Verify this is an explicit address
+    assert!(!deployed.is_confidential);
+    assert!(deployed.blinding_sk.is_none());
+}
+
+#[test]
+fn test_deploy_new_address_confidential() {
+    let address_params = get_address_params("regtest");
+
+    let result = deploy_new_address(P2PKH_PROGRAM_PATH, address_params, AddressType::Confidential);
+    assert!(
+        result.is_ok(),
+        "deploy_new_address (confidential) failed: {:?}",
+        result.err()
+    );
+
+    let deployed = result.unwrap();
+
+    // Verify address starts with correct prefix for regtest confidential
+    // Confidential addresses on regtest use "el1" prefix
+    assert!(
+        deployed.address.starts_with("el1"),
+        "Expected regtest confidential address starting with el1, got: {}",
+        deployed.address
+    );
+
+    // Verify this is a confidential address
+    assert!(deployed.is_confidential);
+    assert!(deployed.blinding_sk.is_some());
+
+    // Verify blinding secret key is 32 bytes
+    let blinding_sk = deployed.blinding_sk.unwrap();
+    assert_eq!(blinding_sk.len(), 32);
 }
 
 #[test]
@@ -103,7 +137,7 @@ fn test_deploy_change_address() {
     // deploy_change_address is identical to deploy_new_address
     let address_params = get_address_params("testnet");
 
-    let result = deploy_change_address(P2PKH_PROGRAM_PATH, address_params);
+    let result = deploy_change_address(P2PKH_PROGRAM_PATH, address_params, AddressType::Explicit);
     assert!(
         result.is_ok(),
         "deploy_change_address failed: {:?}",
@@ -147,7 +181,11 @@ fn test_get_script_pubkey_for_pk_hash() {
 fn test_deploy_with_invalid_program_path() {
     let address_params = get_address_params("regtest");
 
-    let result = deploy_new_address("/nonexistent/path/program.simf", address_params);
+    let result = deploy_new_address(
+        "/nonexistent/path/program.simf",
+        address_params,
+        AddressType::Explicit,
+    );
     assert!(result.is_err());
 
     match result.unwrap_err() {

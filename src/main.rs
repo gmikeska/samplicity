@@ -22,12 +22,30 @@ use std::time::Duration;
 use db::Database;
 use deploy::{
     deploy_change_address, deploy_new_address, get_address_params, get_script_pubkey_for_pk_hash,
+    AddressType,
 };
 use musk::{NodeClient, NodeConfig, RpcClient};
 use spend::{calculate_spend_preview, transaction_to_hex, SpendOrchestrator};
 use websocket::{
     ws_index, AddressInfo, BroadcastMessage, ServerMessage, SpendPreviewData, WsBroadcaster,
 };
+
+/// Request body for deploying a new address
+#[derive(serde::Deserialize)]
+struct DeployRequest {
+    /// Address type: "explicit" or "confidential" (default: "explicit")
+    #[serde(default)]
+    address_type: String,
+}
+
+impl DeployRequest {
+    fn get_address_type(&self) -> AddressType {
+        match self.address_type.to_lowercase().as_str() {
+            "confidential" => AddressType::Confidential,
+            _ => AddressType::Explicit,
+        }
+    }
+}
 
 /// Application state shared across handlers
 struct AppState {
@@ -39,12 +57,16 @@ struct AppState {
 }
 
 /// Deploy a new address endpoint
-async fn deploy_address(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
+async fn deploy_address(
+    state: web::Data<Arc<Mutex<AppState>>>,
+    body: web::Json<DeployRequest>,
+) -> impl Responder {
     let state = state.lock().unwrap();
+    let address_type = body.get_address_type();
 
     let address_params = get_address_params(&state.network);
 
-    match deploy_new_address(&state.program_path, address_params) {
+    match deploy_new_address(&state.program_path, address_params, address_type) {
         Ok(deployed) => {
             // Store in database
             match state
@@ -238,8 +260,8 @@ fn create_spend_preview_callback(
     db: Database,
 ) -> Box<dyn Fn(String, String, u64) -> Option<SpendPreviewData> + Send + Sync> {
     Box::new(move |source_address, destination, amount_sats| {
-        // Get UTXOs for the source address
-        let utxos = match db.get_unspent_utxos(&source_address) {
+        // Get UTXOs for the source address and sort by amount descending
+        let mut utxos = match db.get_unspent_utxos(&source_address) {
             Ok(utxos) => utxos,
             Err(e) => {
                 eprintln!("Failed to get UTXOs: {e}");
@@ -247,7 +269,10 @@ fn create_spend_preview_callback(
             }
         };
 
-        // Calculate preview using only the first UTXO
+        // Sort by amount descending so we use the largest UTXO first
+        utxos.sort_by(|a, b| b.amount.cmp(&a.amount));
+
+        // Calculate preview using only the largest UTXO
         // (we only spend one UTXO at a time for simplicity)
         if utxos.is_empty() {
             eprintln!("No UTXOs available for preview");
@@ -300,8 +325,8 @@ fn create_spend_confirm_callback(
                 .map_err(|e| format!("DB error: {e}"))?
                 .ok_or_else(|| "Pubkey not found for address".to_string())?;
 
-            // 2. Get UTXOs
-            let utxos = db
+            // 2. Get UTXOs and sort by amount descending (use largest first)
+            let mut utxos = db
                 .get_unspent_utxos(&source_address)
                 .map_err(|e| format!("Failed to get UTXOs: {e}"))?;
 
@@ -309,10 +334,15 @@ fn create_spend_confirm_callback(
                 return Err("No UTXOs available to spend".to_string());
             }
 
+            // Sort by amount descending so we use the largest UTXO first
+            utxos.sort_by(|a, b| b.amount.cmp(&a.amount));
+
             // === UTXO VERIFICATION ===
             println!("=== UTXO DATA FROM DATABASE ===");
             println!("  Source address: {source_address}");
             println!("  Total UTXOs: {}", utxos.len());
+            let total_available: u64 = utxos.iter().map(|u| u.amount).sum();
+            println!("  Total available: {total_available} sats");
             for (i, u) in utxos.iter().enumerate() {
                 println!(
                     "  UTXO[{i}]: txid={}, vout={}, amount={} sats, asset={}",
@@ -323,16 +353,16 @@ fn create_spend_confirm_callback(
                 );
             }
             println!(
-                "  Using UTXO[0] with {} sats for this spend",
+                "  Using largest UTXO[0] with {} sats for this spend",
                 utxos[0].amount
             );
             println!("================================");
 
             // 3. Calculate spend preview to get fee and change info
-            // Only use the first UTXO (we spend one UTXO at a time for simplicity)
+            // Only use the largest UTXO (we spend one UTXO at a time for simplicity)
             let preview =
                 calculate_spend_preview(&source_address, &destination, amount_sats, &utxos[..1])
-                    .map_err(|e| format!("Preview calculation failed: {e}"))?;
+                    .map_err(|e| format!("Failed to calculate preview: {e}"))?;
 
             // Log the preview
             println!("=== SPEND PREVIEW ===");
@@ -350,9 +380,11 @@ fn create_spend_confirm_callback(
             println!("=====================");
 
             // 4. Deploy change address if needed
+            // Change addresses default to explicit for simplicity
             let (change_address_str, change_amount) = if preview.has_change {
-                let change_deployed = deploy_change_address(&program_path, address_params)
-                    .map_err(|e| format!("Failed to deploy change address: {e}"))?;
+                let change_deployed =
+                    deploy_change_address(&program_path, address_params, AddressType::Explicit)
+                        .map_err(|e| format!("Failed to deploy change address: {e}"))?;
 
                 // Store change address in DB
                 let change_pubkey_id = db

@@ -7,10 +7,13 @@
 use bip39::Mnemonic;
 use musk::simplicityhl::num::U256;
 use musk::{Arguments, Program, Value, ValueConstructible, WitnessName};
-use secp256k1::{Secp256k1, SecretKey};
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
+
+// Re-export AddressType for convenience
+pub use musk::AddressType;
 
 /// Result of deploying a new address
 #[derive(Debug)]
@@ -23,6 +26,10 @@ pub struct DeployedAddress {
     pub pk_hash: String,
     /// The mnemonic phrase used to generate the key
     pub mnemonic: String,
+    /// Whether this is a confidential address
+    pub is_confidential: bool,
+    /// The blinding secret key (only for confidential addresses)
+    pub blinding_sk: Option<[u8; 32]>,
 }
 
 /// Error type for deployment operations
@@ -51,10 +58,12 @@ impl std::error::Error for DeployError {}
 /// 1. Generates a new mnemonic and derives a keypair
 /// 2. Computes SHA256 of the x-only public key
 /// 3. Compiles the p2pkh.simf program with the `PK_HASH` parameter
-/// 4. Returns the address and key material
+/// 4. For confidential addresses, generates a blinding keypair
+/// 5. Returns the address and key material
 pub fn deploy_new_address<P: AsRef<Path>>(
     program_path: P,
     address_params: &'static musk::elements::AddressParams,
+    address_type: AddressType,
 ) -> Result<DeployedAddress, DeployError> {
     // Generate random entropy for mnemonic (128 bits = 12 words)
     let mut entropy = [0u8; 16];
@@ -103,14 +112,33 @@ pub fn deploy_new_address<P: AsRef<Path>>(
         .instantiate(Arguments::from(args))
         .map_err(|e| DeployError::Compilation(format!("Failed to instantiate program: {e}")))?;
 
-    // Generate the address
-    let address = compiled.address(address_params);
+    // Generate the address based on type
+    let (address, blinding_sk) = match address_type {
+        AddressType::Explicit => (compiled.address(address_params), None),
+        AddressType::Confidential => {
+            // Generate blinding keypair using additional entropy
+            let mut blinding_entropy = [0u8; 32];
+            getrandom::fill(&mut blinding_entropy).map_err(|e| {
+                DeployError::KeyGeneration(format!("Failed to generate blinding entropy: {e}"))
+            })?;
+
+            let blinding_secret = SecretKey::from_slice(&blinding_entropy).map_err(|e| {
+                DeployError::KeyGeneration(format!("Invalid blinding secret key: {e}"))
+            })?;
+            let blinding_public = PublicKey::from_secret_key(&secp, &blinding_secret);
+
+            let address = compiled.confidential_address(address_params, blinding_public);
+            (address, Some(blinding_entropy))
+        }
+    };
 
     Ok(DeployedAddress {
         address: address.to_string(),
         pubkey: pubkey_bytes,
         pk_hash: pk_hash_hex,
         mnemonic: mnemonic_phrase,
+        is_confidential: address_type == AddressType::Confidential,
+        blinding_sk,
     })
 }
 
@@ -128,11 +156,13 @@ pub fn get_address_params(network: &str) -> &'static musk::elements::AddressPara
 ///
 /// This is essentially the same as `deploy_new_address` - change addresses
 /// are regular p2pkh addresses that receive the remainder from a spend.
+/// Change addresses always use the same address type as the source.
 pub fn deploy_change_address<P: AsRef<Path>>(
     program_path: P,
     address_params: &'static musk::elements::AddressParams,
+    address_type: AddressType,
 ) -> Result<DeployedAddress, DeployError> {
-    deploy_new_address(program_path, address_params)
+    deploy_new_address(program_path, address_params, address_type)
 }
 
 /// Get the script pubkey for a given public key hash

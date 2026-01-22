@@ -288,6 +288,74 @@
             border-color: #dc3545;
             color: #dc3545;
         }
+        
+        /* Address Type Toggle */
+        .address-type-toggle {
+            display: inline-flex;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 4px;
+            margin-right: 16px;
+            vertical-align: middle;
+        }
+        
+        .toggle-btn {
+            padding: 8px 16px;
+            border: none;
+            background: transparent;
+            color: rgba(255, 255, 255, 0.6);
+            cursor: pointer;
+            border-radius: 6px;
+            font-weight: 500;
+            font-size: 0.9rem;
+            transition: all 0.2s ease;
+        }
+        
+        .toggle-btn:hover {
+            color: rgba(255, 255, 255, 0.9);
+        }
+        
+        .toggle-btn.active {
+            background: linear-gradient(135deg, var(--accent-color), #00f5d4);
+            color: #1a1a2e;
+            font-weight: 600;
+        }
+        
+        .toggle-btn.active.confidential {
+            background: linear-gradient(135deg, #8b5cf6, #a78bfa);
+        }
+        
+        .deploy-controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        
+        /* Confidential address indicator */
+        .address-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-left: 8px;
+        }
+        
+        .badge-explicit {
+            background: rgba(0, 212, 170, 0.2);
+            color: var(--accent-color);
+            border: 1px solid rgba(0, 212, 170, 0.3);
+        }
+        
+        .badge-confidential {
+            background: rgba(139, 92, 246, 0.2);
+            color: #a78bfa;
+            border: 1px solid rgba(139, 92, 246, 0.3);
+        }
     </style>
 </head>
 <body>
@@ -305,9 +373,19 @@
         <div class="hero-section text-center">
             <h1 class="hero-title">Simplicity Address Manager</h1>
             <p class="hero-subtitle">Deploy and manage P2PKH Simplicity contracts on Liquid Testnet</p>
-            <button class="btn btn-deploy mt-4" id="deployBtn" onclick="deployAddress()">
-                🚀 Deploy New Address
-            </button>
+            <div class="deploy-controls mt-4">
+                <div class="address-type-toggle">
+                    <button class="toggle-btn active" id="toggleExplicit" onclick="setAddressType('explicit')">
+                        🔓 Explicit
+                    </button>
+                    <button class="toggle-btn" id="toggleConfidential" onclick="setAddressType('confidential')">
+                        🔒 Confidential
+                    </button>
+                </div>
+                <button class="btn btn-deploy" id="deployBtn" onclick="deployAddress()">
+                    🚀 Deploy New Address
+                </button>
+            </div>
         </div>
 
         <div class="card mt-4">
@@ -417,6 +495,34 @@
         const maxReconnectAttempts = 5;
         let pendingSpend = null;
         let spendModal = null;
+        let selectedAddressType = 'explicit'; // 'explicit' or 'confidential'
+
+        // Set the address type and update toggle UI
+        function setAddressType(type) {
+            selectedAddressType = type;
+            const explicitBtn = document.getElementById('toggleExplicit');
+            const confidentialBtn = document.getElementById('toggleConfidential');
+            
+            if (type === 'explicit') {
+                explicitBtn.classList.add('active');
+                confidentialBtn.classList.remove('active', 'confidential');
+            } else {
+                explicitBtn.classList.remove('active');
+                confidentialBtn.classList.add('active', 'confidential');
+            }
+        }
+
+        // Detect if an address is confidential based on its prefix
+        function isConfidentialAddress(address) {
+            if (!address) return false;
+            // Confidential addresses have different prefixes:
+            // Liquid mainnet: lq1 (confidential) vs ex1 (explicit)
+            // Liquid testnet: tlq1 (confidential) vs tex1 (explicit)
+            // Elements regtest: el1 (confidential) vs ert1 (explicit)
+            return address.startsWith('lq1') || 
+                   address.startsWith('tlq1') || 
+                   address.startsWith('el1');
+        }
 
         // Initialize WebSocket connection
         function connect() {
@@ -529,12 +635,14 @@
         async function deployAddress() {
             const btn = document.getElementById('deployBtn');
             btn.disabled = true;
-            btn.innerHTML = '<span class="loading">⏳</span> Deploying...';
+            const typeLabel = selectedAddressType === 'confidential' ? '🔒' : '🔓';
+            btn.innerHTML = `<span class="loading">⏳</span> Deploying ${typeLabel}...`;
 
             try {
                 const response = await fetch('/api/deploy', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ address_type: selectedAddressType })
                 });
                 
                 const result = await response.json();
@@ -731,12 +839,18 @@
 
             tbody.innerHTML = addresses.map((addr, idx) => {
                 const canDelete = addr.balance === 0 && isAddressOlderThan3Minutes(addr.deployed_at);
+                const isConfidential = isConfidentialAddress(addr.address);
+                const badgeClass = isConfidential ? 'badge-confidential' : 'badge-explicit';
+                const badgeText = isConfidential ? '🔒 Confidential' : '🔓 Explicit';
                 return `
                 <tr>
                     <td class="address-cell">
                         <div class="address-cell-wrapper">
                             <div class="address-content">
-                                <div>${addr.address}</div>
+                                <div>
+                                    ${addr.address}
+                                    <span class="address-badge ${badgeClass}">${badgeText}</span>
+                                </div>
                                 <div class="pk-hash">PK Hash: ${addr.pk_hash.substring(0, 16)}...</div>
                             </div>
                             ${canDelete ? `
