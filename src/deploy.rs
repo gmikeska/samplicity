@@ -15,6 +15,19 @@ use std::path::Path;
 // Re-export AddressType for convenience
 pub use musk::AddressType;
 
+/// Detect if an address is confidential based on its prefix
+///
+/// Confidential addresses start with "tlq" (testnet) or "lq" (mainnet)
+/// Explicit addresses start with "tex" (testnet) or "ex" (mainnet)
+#[must_use]
+pub fn detect_address_type(address: &str) -> AddressType {
+    if address.starts_with("tlq") || address.starts_with("lq") {
+        AddressType::Confidential
+    } else {
+        AddressType::Explicit
+    }
+}
+
 /// Result of deploying a new address
 #[derive(Debug)]
 pub struct DeployedAddress {

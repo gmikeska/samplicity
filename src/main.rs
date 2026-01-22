@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use db::Database;
 use deploy::{
-    deploy_change_address, deploy_new_address, get_address_params, get_script_pubkey_for_pk_hash,
-    AddressType,
+    deploy_change_address, deploy_new_address, detect_address_type, get_address_params,
+    get_script_pubkey_for_pk_hash, AddressType,
 };
 use musk::{NodeClient, NodeConfig, RpcClient};
 use spend::{calculate_spend_preview, transaction_to_hex, SpendOrchestrator};
@@ -380,10 +380,12 @@ fn create_spend_confirm_callback(
             println!("=====================");
 
             // 4. Deploy change address if needed
-            // Change addresses default to explicit for simplicity
+            // Change address type matches the source address type
             let (change_address_str, change_amount) = if preview.has_change {
+                let source_address_type = detect_address_type(&source_address);
+                println!("  Source address type: {source_address_type:?}");
                 let change_deployed =
-                    deploy_change_address(&program_path, address_params, AddressType::Explicit)
+                    deploy_change_address(&program_path, address_params, source_address_type)
                         .map_err(|e| format!("Failed to deploy change address: {e}"))?;
 
                 // Store change address in DB

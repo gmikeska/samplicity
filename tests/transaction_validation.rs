@@ -14,7 +14,7 @@ use samplicity::deploy::{deploy_new_address, AddressType};
 use samplicity::spend::{
     build_and_sign_transaction, calculate_spend_preview, transaction_to_hex, SpendOrchestrator,
 };
-use samplicity::{Database, StoredAddress};
+use samplicity::{detect_address_type, Database, StoredAddress};
 use serial_test::serial;
 use std::str::FromStr;
 
@@ -514,4 +514,239 @@ fn test_verify_output_values() {
     println!("\n✓ Output values validated successfully");
     println!("✓ Conservation of value verified: {} = {} + {} + {}", 
              input_amount, SEND_AMOUNT, preview.change_amount, preview.fee);
+}
+
+// ============================================================================
+// Address Type Detection Tests
+// ============================================================================
+
+#[test]
+fn test_detect_address_type_explicit_testnet() {
+    // Explicit testnet addresses start with "tex"
+    let explicit_addr = "tex1pxv4f8xhds9gzwenwtrh62khlvyxfjjpeg4mujzf38pqha3u4sslsvvk9v6";
+    assert_eq!(detect_address_type(explicit_addr), AddressType::Explicit);
+}
+
+#[test]
+fn test_detect_address_type_confidential_testnet() {
+    // Confidential testnet addresses start with "tlq"
+    let confidential_addr = "tlq1pqwq88n6llaqfl6xves5kg7dsefmq57z4yl0w5kpmz0sv2y2jz0terr2pwj7g0wel43gmsjyxmrwknr5c708mkumvd7kenxw5gkme4y7xkpyfv0rnu749";
+    assert_eq!(detect_address_type(confidential_addr), AddressType::Confidential);
+}
+
+#[test]
+fn test_detect_address_type_explicit_mainnet() {
+    // Explicit mainnet addresses start with "ex"
+    let explicit_addr = "ex1q0000000000000000000000000000000000000000";
+    assert_eq!(detect_address_type(explicit_addr), AddressType::Explicit);
+}
+
+#[test]
+fn test_detect_address_type_confidential_mainnet() {
+    // Confidential mainnet addresses start with "lq"
+    let confidential_addr = "lq1qq0000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+    assert_eq!(detect_address_type(confidential_addr), AddressType::Confidential);
+}
+
+// ============================================================================
+// Change Address Type Tests
+// ============================================================================
+
+/// Helper to deploy an address with a specific type
+fn deploy_address_with_type(
+    address_params: &'static musk::elements::AddressParams,
+    address_type: AddressType,
+) -> String {
+    let deployed = deploy_new_address(P2PKH_PROGRAM_PATH, address_params, address_type)
+        .expect("Failed to deploy address");
+    deployed.address
+}
+
+#[test]
+#[serial]
+fn test_explicit_source_produces_explicit_change() {
+    println!("\n=== TEST: Explicit source address produces explicit change address ===\n");
+
+    let client = create_rpc_client();
+    let address_params = client.address_params();
+
+    // Deploy an explicit source address
+    let source_address = deploy_address_with_type(address_params, AddressType::Explicit);
+    println!("Source address (explicit): {source_address}");
+
+    // Verify it's detected as explicit
+    let detected_type = detect_address_type(&source_address);
+    assert_eq!(detected_type, AddressType::Explicit, "Source should be detected as explicit");
+
+    // Deploy a "change" address using the detected type
+    let change_address = deploy_address_with_type(address_params, detected_type);
+    println!("Change address: {change_address}");
+
+    // Verify the change address is also explicit
+    let change_type = detect_address_type(&change_address);
+    assert_eq!(change_type, AddressType::Explicit, "Change address should be explicit");
+
+    // Explicit addresses should start with "tex" on testnet
+    assert!(
+        change_address.starts_with("tex"),
+        "Explicit change address should start with 'tex', got: {}",
+        &change_address[..change_address.len().min(10)]
+    );
+
+    println!("✓ Explicit source → explicit change address");
+}
+
+#[test]
+#[serial]
+fn test_confidential_source_produces_confidential_change() {
+    println!("\n=== TEST: Confidential source address produces confidential change address ===\n");
+
+    let client = create_rpc_client();
+    let address_params = client.address_params();
+
+    // Deploy a confidential source address
+    let source_address = deploy_address_with_type(address_params, AddressType::Confidential);
+    println!("Source address (confidential): {source_address}");
+
+    // Verify it's detected as confidential
+    let detected_type = detect_address_type(&source_address);
+    assert_eq!(detected_type, AddressType::Confidential, "Source should be detected as confidential");
+
+    // Deploy a "change" address using the detected type
+    let change_address = deploy_address_with_type(address_params, detected_type);
+    println!("Change address: {change_address}");
+
+    // Verify the change address is also confidential
+    let change_type = detect_address_type(&change_address);
+    assert_eq!(change_type, AddressType::Confidential, "Change address should be confidential");
+
+    // Confidential addresses should start with "tlq" on testnet
+    assert!(
+        change_address.starts_with("tlq"),
+        "Confidential change address should start with 'tlq', got: {}",
+        &change_address[..change_address.len().min(10)]
+    );
+
+    println!("✓ Confidential source → confidential change address");
+}
+
+#[test]
+#[ignore = "requires live Elements node and samplicity.db with a confidential funded address"]
+#[serial]
+fn test_spend_from_confidential_address_uses_confidential_change() {
+    println!("\n=== TEST: Spending from confidential address uses confidential change ===\n");
+
+    let mut client = create_rpc_client();
+    let address_params = client.address_params();
+    let genesis_hash = get_genesis_hash(&mut client);
+    let db = open_database();
+
+    // Find a funded confidential address
+    let addresses = db.get_all_addresses().expect("Failed to get addresses");
+    let confidential_funded = addresses.iter().find(|addr| {
+        detect_address_type(&addr.address) == AddressType::Confidential
+            && db.get_unspent_utxos(&addr.address).map(|u| !u.is_empty()).unwrap_or(false)
+    });
+
+    let Some(source_addr_info) = confidential_funded else {
+        println!("SKIPPED: No funded confidential addresses found in database");
+        return;
+    };
+
+    let source_address = &source_addr_info.address;
+    let mut utxos = db.get_unspent_utxos(source_address).expect("Failed to get UTXOs");
+    utxos.sort_by(|a, b| b.amount.cmp(&a.amount));
+
+    if utxos[0].amount < SEND_AMOUNT + 1000 {
+        println!("SKIPPED: Insufficient funds in confidential address");
+        return;
+    }
+
+    let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
+        .expect("Invalid pk_hash hex")
+        .try_into()
+        .expect("Invalid pk_hash length");
+
+    let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
+        println!("SKIPPED: No mnemonic found for address");
+        return;
+    };
+
+    println!("Source address (confidential): {source_address}");
+    println!("UTXO: {} sats", utxos[0].amount);
+
+    // Deploy destination (explicit for simplicity)
+    let dest_address = deploy_destination_address(address_params);
+    println!("Destination address: {dest_address}");
+
+    // Calculate preview
+    let preview = calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1])
+        .expect("Failed to calculate preview");
+
+    // Deploy change address with SAME TYPE as source
+    let source_type = detect_address_type(source_address);
+    assert_eq!(source_type, AddressType::Confidential);
+
+    let change_address = if preview.has_change {
+        let addr = deploy_address_with_type(address_params, source_type);
+        println!("Change address (should be confidential): {addr}");
+        
+        // Verify change address is confidential
+        let change_type = detect_address_type(&addr);
+        assert_eq!(
+            change_type,
+            AddressType::Confidential,
+            "Change address should be confidential when source is confidential"
+        );
+        assert!(
+            addr.starts_with("tlq"),
+            "Confidential change address should start with 'tlq'"
+        );
+        Some(addr)
+    } else {
+        None
+    };
+
+    // Build the transaction
+    let source_addr_parsed = musk::elements::Address::from_str(source_address).unwrap();
+    let source_script = source_addr_parsed.script_pubkey();
+    let dest_addr = musk::elements::Address::from_str(&dest_address).unwrap();
+    let dest_script = dest_addr.script_pubkey();
+    let change_script = change_address.as_ref().map(|addr| {
+        musk::elements::Address::from_str(addr).unwrap().script_pubkey()
+    });
+
+    let tx = build_and_sign_transaction(
+        P2PKH_PROGRAM_PATH,
+        &utxos[0],
+        source_script,
+        &pk_hash_bytes,
+        &mnemonic,
+        dest_script,
+        SEND_AMOUNT,
+        preview.fee,
+        change_script,
+        preview.change_amount,
+        genesis_hash,
+    )
+    .expect("Failed to build transaction");
+
+    let tx_hex = transaction_to_hex(&tx);
+    println!("Built transaction: {} bytes", tx_hex.len() / 2);
+
+    // Verify mempool acceptance
+    let mempool_result = client
+        .test_mempool_accept(&tx_hex)
+        .expect("Failed to call testmempoolaccept");
+
+    let allowed = mempool_result
+        .first()
+        .and_then(|r| r.get("allowed"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    assert!(allowed, "Transaction should be accepted by mempool");
+
+    println!("\n✓ Confidential source → confidential change address");
+    println!("✓ Transaction accepted by mempool");
 }

@@ -9,4 +9,6 @@ pub mod spend;
 pub mod websocket;
 
 pub use db::{Database, StoredAddress, StoredPubkey, StoredUtxo};
-pub use deploy::{deploy_new_address, get_address_params, AddressType, DeployedAddress};
+pub use deploy::{
+    deploy_new_address, detect_address_type, get_address_params, AddressType, DeployedAddress,
+};
