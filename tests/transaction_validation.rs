@@ -24,9 +24,10 @@ const P2PKH_PROGRAM_PATH: &str = "musk/p2pkh.simf";
 /// Amount to send in test transactions (must be less than available UTXO)
 const SEND_AMOUNT: u64 = 500; // 500 sats - small amount for testing
 
-/// Helper to create RPC client from config
+/// Helper to create RPC client from config (always uses [test] environment)
 fn create_rpc_client() -> RpcClient {
-    RpcClient::from_config_file("musk.conf").expect("Failed to create RPC client from musk.conf")
+    RpcClient::from_env_config_file_with_env("musk.conf", "test")
+        .expect("Failed to create RPC client from musk.conf [test] environment")
 }
 
 /// Helper to get genesis hash from RPC client
@@ -34,9 +35,9 @@ fn get_genesis_hash(client: &mut RpcClient) -> musk::elements::BlockHash {
     client.genesis_hash().expect("Failed to get genesis hash")
 }
 
-/// Helper to open the samplicity database
+/// Helper to open the samplicity test database (always uses samplicity-test.db)
 fn open_database() -> Database {
-    Database::open("samplicity.db").expect("Failed to open samplicity.db")
+    Database::open("samplicity-test.db").expect("Failed to open samplicity-test.db")
 }
 
 /// Find an address with UTXOs that we can use for testing
@@ -69,7 +70,7 @@ fn deploy_destination_address(address_params: &'static musk::elements::AddressPa
 }
 
 #[test]
-#[ignore = "requires live Elements node and samplicity.db"]
+#[ignore = "requires live Elements node and samplicity-{env}.db"]
 #[serial]
 fn test_decode_raw_transaction_structure() {
     println!("\n=== TEST: decoderawtransaction validates transaction structure ===\n");
@@ -84,8 +85,7 @@ fn test_decode_raw_transaction_structure() {
 
     // 2. Find a funded address from the database
     let Some((source_addr_info, utxos)) = find_funded_address(&db) else {
-        println!("SKIPPED: No funded addresses found in database");
-        return;
+        panic!("No funded addresses found in samplicity-test.db - fund an address first");
     };
 
     let source_address = &source_addr_info.address;
@@ -102,8 +102,7 @@ fn test_decode_raw_transaction_structure() {
 
     // 3. Get mnemonic for signing
     let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
-        println!("SKIPPED: No mnemonic found for address");
-        return;
+        panic!("No mnemonic found for address in samplicity-test.db");
     };
 
     // 4. Deploy a destination address
@@ -202,7 +201,7 @@ fn test_decode_raw_transaction_structure() {
 }
 
 #[test]
-#[ignore = "requires live Elements node and samplicity.db"]
+#[ignore = "requires live Elements node and samplicity-{env}.db"]
 #[serial]
 fn test_mempool_accept_validates_spend() {
     println!("\n=== TEST: testmempoolaccept validates transaction ===\n");
@@ -217,8 +216,7 @@ fn test_mempool_accept_validates_spend() {
 
     // 2. Find a funded address
     let Some((source_addr_info, utxos)) = find_funded_address(&db) else {
-        println!("SKIPPED: No funded addresses found in database");
-        return;
+        panic!("No funded addresses found in samplicity-test.db - fund an address first");
     };
 
     let source_address = &source_addr_info.address;
@@ -235,8 +233,7 @@ fn test_mempool_accept_validates_spend() {
 
     // 3. Get mnemonic
     let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
-        println!("SKIPPED: No mnemonic found for address");
-        return;
+        panic!("No mnemonic found for address in samplicity-test.db");
     };
 
     // 4. Deploy destination
@@ -313,7 +310,7 @@ fn test_mempool_accept_validates_spend() {
 }
 
 #[test]
-#[ignore = "requires live Elements node and samplicity.db"]
+#[ignore = "requires live Elements node and samplicity-{env}.db"]
 #[serial]
 fn test_transaction_roundtrip_decode() {
     println!("\n=== TEST: Transaction encode/decode roundtrip ===\n");
@@ -325,8 +322,7 @@ fn test_transaction_roundtrip_decode() {
 
     // Find funded address
     let Some((source_addr_info, utxos)) = find_funded_address(&db) else {
-        println!("SKIPPED: No funded addresses found in database");
-        return;
+        panic!("No funded addresses found in samplicity-test.db - fund an address first");
     };
 
     let source_address = &source_addr_info.address;
@@ -336,8 +332,7 @@ fn test_transaction_roundtrip_decode() {
         .expect("Invalid pk_hash length");
 
     let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
-        println!("SKIPPED: No mnemonic found for address");
-        return;
+        panic!("No mnemonic found for address in samplicity-test.db");
     };
 
     // Deploy destination
@@ -414,7 +409,7 @@ fn test_transaction_roundtrip_decode() {
 }
 
 #[test]
-#[ignore = "requires live Elements node and samplicity.db"]
+#[ignore = "requires live Elements node and samplicity-{env}.db"]
 #[serial]
 fn test_verify_output_values() {
     println!("\n=== TEST: Verify output values match expected amounts ===\n");
@@ -426,8 +421,7 @@ fn test_verify_output_values() {
 
     // Find funded address
     let Some((source_addr_info, utxos)) = find_funded_address(&db) else {
-        println!("SKIPPED: No funded addresses found in database");
-        return;
+        panic!("No funded addresses found in samplicity-test.db - fund an address first");
     };
 
     let source_address = &source_addr_info.address;
@@ -438,8 +432,7 @@ fn test_verify_output_values() {
     let input_amount = utxos[0].amount;
 
     let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
-        println!("SKIPPED: No mnemonic found for address");
-        return;
+        panic!("No mnemonic found for address in samplicity-test.db");
     };
 
     // Destination
@@ -682,7 +675,7 @@ fn test_confidential_source_produces_confidential_change() {
 }
 
 #[test]
-#[ignore = "requires live Elements node and samplicity.db with a confidential funded address"]
+#[ignore = "requires live Elements node and samplicity-{env}.db with a confidential funded address"]
 #[serial]
 fn test_spend_from_confidential_address_uses_confidential_change() {
     println!("\n=== TEST: Spending from confidential address uses confidential change ===\n");
@@ -703,8 +696,7 @@ fn test_spend_from_confidential_address_uses_confidential_change() {
     });
 
     let Some(source_addr_info) = confidential_funded else {
-        println!("SKIPPED: No funded confidential addresses found in database");
-        return;
+        panic!("No funded confidential addresses found in samplicity-test.db - fund a confidential address first");
     };
 
     let source_address = &source_addr_info.address;
@@ -714,8 +706,7 @@ fn test_spend_from_confidential_address_uses_confidential_change() {
     utxos.sort_by(|a, b| b.amount.cmp(&a.amount));
 
     if utxos[0].amount < SEND_AMOUNT + 1000 {
-        println!("SKIPPED: Insufficient funds in confidential address");
-        return;
+        panic!("Insufficient funds in confidential address - need at least {} sats", SEND_AMOUNT + 1000);
     }
 
     let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
@@ -724,8 +715,7 @@ fn test_spend_from_confidential_address_uses_confidential_change() {
         .expect("Invalid pk_hash length");
 
     let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
-        println!("SKIPPED: No mnemonic found for address");
-        return;
+        panic!("No mnemonic found for address in samplicity-test.db");
     };
 
     println!("Source address (confidential): {source_address}");

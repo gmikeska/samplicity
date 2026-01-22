@@ -24,7 +24,7 @@ use deploy::{
     deploy_change_address, deploy_new_address, detect_address_type, get_address_params,
     get_script_pubkey_for_pk_hash, AddressType,
 };
-use musk::{NodeClient, NodeConfig, RpcClient};
+use musk::{MuskConfig, NodeClient, RpcClient};
 use spend::{calculate_spend_preview, transaction_to_hex, SpendOrchestrator};
 use websocket::{
     ws_index, AddressInfo, BroadcastMessage, ServerMessage, SpendPreviewData, WsBroadcaster,
@@ -236,13 +236,26 @@ async fn balance_polling_task(
     }
 }
 
-/// Load configuration from musk.conf and return network type
-fn load_config() -> String {
-    // Try to load from musk.conf
-    let config_path = "musk.conf";
+/// Get the current environment from MUSK_ENV (defaults to "dev")
+fn get_musk_env() -> String {
+    std::env::var("MUSK_ENV").unwrap_or_else(|_| "dev".to_string())
+}
 
-    musk::NodeConfig::from_file(config_path).map_or_else(
-        |_| "testnet".to_string(),
+/// Get the database filename for the current environment
+fn get_database_name(env: &str) -> String {
+    format!("samplicity-{env}.db")
+}
+
+/// Load configuration from musk.conf for the current environment and return network type
+fn load_config() -> String {
+    let config_path = "musk.conf";
+    let env = get_musk_env();
+
+    MuskConfig::load_for_environment(config_path, &env).map_or_else(
+        |e| {
+            eprintln!("Warning: Failed to load config for environment '{env}': {e}");
+            "testnet".to_string()
+        },
         |config| {
             let network = match config.network() {
                 musk::Network::Regtest => "regtest",
@@ -497,17 +510,20 @@ async fn main() -> std::io::Result<()> {
         )
         .init();
 
-    // Load configuration
+    // Load configuration for current environment
+    let env = get_musk_env();
     let network = load_config();
-    println!("Loaded configuration for network: {network}");
+    println!("Loaded configuration for environment '{env}', network: {network}");
 
-    // Initialize database
-    let db = Database::open("samplicity.db").expect("Failed to open database");
-    println!("Database initialized");
+    // Initialize database (named per environment)
+    let db_name = get_database_name(&env);
+    let db = Database::open(&db_name).expect("Failed to open database");
+    println!("Database initialized: {db_name}");
 
     // Create RPC client for broadcasting transactions via Elements node
-    let rpc_config = NodeConfig::from_file("musk.conf")
-        .expect("Failed to load musk.conf - make sure it exists and has valid RPC settings");
+    let rpc_config = MuskConfig::load_for_environment("musk.conf", &env).expect(
+        "Failed to load musk.conf - make sure it exists and has valid settings for the current environment",
+    );
     let rpc_client = Arc::new(
         RpcClient::new(rpc_config)
             .expect("Failed to create RPC client - check Elements node is running"),
