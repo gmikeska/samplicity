@@ -75,7 +75,7 @@ async fn deploy_address(
             {
                 Ok(pubkey_id) => {
                     // For confidential addresses, pass the blinding secret key
-                    let blinding_sk_slice = deployed.blinding_sk.as_ref().map(|sk| sk.as_slice());
+                    let blinding_sk_slice = deployed.blinding_sk.as_ref().map(<[u8; 32]>::as_slice);
                     match state.db.insert_address(
                         &deployed.address,
                         pubkey_id,
@@ -256,7 +256,7 @@ async fn balance_polling_task(
     }
 }
 
-/// Get the current environment from MUSK_ENV (defaults to "dev")
+/// Get the current environment from `MUSK_ENV` (defaults to "dev")
 fn get_musk_env() -> String {
     std::env::var("MUSK_ENV").unwrap_or_else(|_| "dev".to_string())
 }
@@ -430,7 +430,7 @@ fn create_spend_confirm_callback(
                     .map_err(|e| format!("Failed to store change pubkey: {e}"))?;
 
                 let blinding_sk_slice =
-                    change_deployed.blinding_sk.as_ref().map(|sk| sk.as_slice());
+                    change_deployed.blinding_sk.as_ref().map(<[u8; 32]>::as_slice);
                 db.insert_address(
                     &change_deployed.address,
                     change_pubkey_id,
@@ -578,7 +578,7 @@ async fn main() -> std::io::Result<()> {
         }
         // Also import blinding keys for confidential addresses
         for addr in &existing_addrs {
-            if let Ok(Some(blinding_sk)) = db.get_blinding_sk(&addr.address) {
+            if let Some(blinding_sk) = db.get_blinding_sk(&addr.address) {
                 let blinding_key_hex = hex::encode(&blinding_sk);
                 if let Err(e) = rpc_client.import_blinding_key(&addr.address, &blinding_key_hex) {
                     eprintln!(

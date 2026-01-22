@@ -68,6 +68,7 @@ pub struct StoredUtxo {
 impl StoredUtxo {
     /// Check if this UTXO is from a confidential transaction
     #[must_use]
+    #[allow(dead_code)]
     pub fn is_confidential(&self) -> bool {
         if let Some(blinder) = &self.amount_blinder {
             if blinder.iter().any(|&b| b != 0) {
@@ -226,7 +227,8 @@ impl Database {
     /// Get the blinding secret key for a confidential address
     ///
     /// Returns None if the address is not found or is not a confidential address.
-    pub fn get_blinding_sk(&self, address: &str) -> Result<Option<Vec<u8>>> {
+    #[must_use]
+    pub fn get_blinding_sk(&self, address: &str) -> Option<Vec<u8>> {
         let conn = self.conn.lock().unwrap();
         let result: Option<Option<Vec<u8>>> = conn
             .query_row(
@@ -235,7 +237,7 @@ impl Database {
                 |row| row.get(0),
             )
             .ok();
-        Ok(result.flatten())
+        result.flatten()
     }
 
     /// Get all addresses with their pubkey hashes
@@ -519,6 +521,7 @@ impl Database {
     }
 
     /// Sync UTXOs from RPC data for an address (legacy method without blinding)
+    #[allow(dead_code)]
     pub fn sync_utxos(
         &self,
         address: &str,

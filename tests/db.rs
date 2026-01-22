@@ -288,16 +288,16 @@ fn test_blinding_sk_storage_and_retrieval() {
     .unwrap();
 
     // Verify explicit address has no blinding key
-    let result = db.get_blinding_sk("explicit_addr").unwrap();
+    let result = db.get_blinding_sk("explicit_addr");
     assert!(result.is_none());
 
     // Verify confidential address has the correct blinding key
-    let result = db.get_blinding_sk("confidential_addr").unwrap();
+    let result = db.get_blinding_sk("confidential_addr");
     assert!(result.is_some());
     assert_eq!(result.unwrap(), blinding_sk.to_vec());
 
     // Verify nonexistent address returns None
-    let result = db.get_blinding_sk("nonexistent").unwrap();
+    let result = db.get_blinding_sk("nonexistent");
     assert!(result.is_none());
 }
 

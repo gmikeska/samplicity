@@ -106,7 +106,7 @@ fn get_mnemonic_for_address(db: &Database, address: &str) -> String {
         .mnemonic
 }
 
-/// Get pk_hash bytes for an address
+/// Get `pk_hash` bytes for an address
 fn get_pk_hash_bytes(addr_info: &StoredAddress) -> [u8; 32] {
     hex::decode(&addr_info.pk_hash)
         .expect("Invalid pk_hash hex")
@@ -146,8 +146,7 @@ fn test_scenario_1_explicit_to_explicit() {
 
     assert!(
         !utxos.is_empty(),
-        "Source address has no UTXOs - fund {} first",
-        source_address
+        "Source address has no UTXOs - fund {source_address} first"
     );
     assert!(
         utxos[0].amount > SEND_AMOUNT + 1000,
@@ -199,7 +198,7 @@ fn test_scenario_1_explicit_to_explicit() {
     let tx = build_and_sign_transaction(
         P2PKH_PROGRAM_PATH,
         &utxos[..1], // Use first UTXO only for this test
-        source_script,
+        &source_script,
         &pk_hash_bytes,
         &mnemonic,
         dest_script,
@@ -263,8 +262,7 @@ fn test_scenario_2_explicit_to_confidential() {
 
     assert!(
         !utxos.is_empty(),
-        "Source address has no UTXOs - fund {} first",
-        source_address
+        "Source address has no UTXOs - fund {source_address} first"
     );
 
     let pk_hash_bytes = get_pk_hash_bytes(&source_addr_info);
@@ -316,7 +314,7 @@ fn test_scenario_2_explicit_to_confidential() {
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
         &utxos[..1], // Use first UTXO only for this test
-        source_script,
+        &source_script,
         &pk_hash_bytes,
         &mnemonic,
         &dest_addr,
@@ -382,8 +380,7 @@ fn test_scenario_3_confidential_to_explicit() {
 
     assert!(
         !utxos.is_empty(),
-        "Source address has no UTXOs - fund {} first",
-        source_address
+        "Source address has no UTXOs - fund {source_address} first"
     );
     assert!(
         utxos[0].amount_blinder.is_some(),
@@ -443,7 +440,7 @@ fn test_scenario_3_confidential_to_explicit() {
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
         &utxos[..1],
-        source_script,
+        &source_script,
         &pk_hash_bytes,
         &mnemonic,
         &dest_addr,
@@ -508,8 +505,7 @@ fn test_scenario_4_confidential_to_confidential() {
 
     assert!(
         !utxos.is_empty(),
-        "Source address has no UTXOs - fund {} first",
-        source_address
+        "Source address has no UTXOs - fund {source_address} first"
     );
     assert!(
         utxos[0].amount_blinder.is_some(),
@@ -573,7 +569,7 @@ fn test_scenario_4_confidential_to_confidential() {
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
         &utxos[..1],
-        source_script,
+        &source_script,
         &pk_hash_bytes,
         &mnemonic,
         &dest_addr,
@@ -640,8 +636,7 @@ fn test_scenario_5_confidential_with_blinded_change() {
 
     assert!(
         !utxos.is_empty(),
-        "Source address has no UTXOs - fund {} first",
-        source_address
+        "Source address has no UTXOs - fund {source_address} first"
     );
     assert!(
         utxos[0].amount_blinder.is_some(),
@@ -698,7 +693,7 @@ fn test_scenario_5_confidential_with_blinded_change() {
     let tx = build_and_sign_confidential_transaction(
         P2PKH_PROGRAM_PATH,
         &utxos[..1],
-        source_script,
+        &source_script,
         &pk_hash_bytes,
         &mnemonic,
         &dest_addr,
@@ -732,9 +727,11 @@ fn test_scenario_5_confidential_with_blinded_change() {
 
     for (i, output) in vout.iter().enumerate() {
         let value = output.get("value");
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let value_str = match value {
             Some(serde_json::Value::Number(n)) => {
-                format!("{} sats", (n.as_f64().unwrap() * 1e8) as u64)
+                let sats = (n.as_f64().unwrap() * 1e8) as u64;
+                format!("{sats} sats")
             }
             Some(serde_json::Value::String(s)) if s.contains("commitment") => "BLINDED".to_string(),
             _ => "unknown".to_string(),
@@ -757,10 +754,7 @@ fn test_scenario_5_confidential_with_blinded_change() {
             found_blinded_output = true;
         }
 
-        println!(
-            "  Output {i}: {output_type} = {value_str} (blinded={})",
-            is_blinded
-        );
+        println!("  Output {i}: {output_type} = {value_str} (blinded={is_blinded})");
     }
 
     // Verify mempool acceptance
@@ -921,7 +915,7 @@ fn test_spend_orchestrator_handles_all_address_types() {
 
             let orchestrator =
                 SpendOrchestrator::new(P2PKH_PROGRAM_PATH, address_params, genesis_hash)
-                    .with_rpc_client(rpc_client.clone());
+                    .with_rpc_client(rpc_client);
 
             let change_address =
                 deploy_address_with_type(address_params, AddressType::Confidential);
@@ -1007,11 +1001,9 @@ fn test_database_has_required_addresses() {
         let result = db.get_address(addr);
         assert!(
             result.is_ok() && result.unwrap().is_some(),
-            "Missing required address: {} ({})",
-            name,
-            addr
+            "Missing required address: {name} ({addr})"
         );
-        println!("✓ Found: {} - {}", name, &addr[..20]);
+        println!("✓ Found: {name} - {}", &addr[..20]);
     }
 
     println!("\n✅ All required addresses present in database");
@@ -1030,9 +1022,7 @@ fn test_confidential_addresses_have_blinding_keys() {
     ];
 
     for addr in &confidential_addresses {
-        let blinding_sk = db
-            .get_blinding_sk(addr)
-            .expect("Failed to query blinding key");
+        let blinding_sk = db.get_blinding_sk(addr);
         assert!(
             blinding_sk.is_some(),
             "Confidential address missing blinding key: {}",
@@ -1103,8 +1093,8 @@ fn test_scenario_6_multi_utxo_spending() {
         return;
     }
 
-    let db = samplicity::db::Database::open(db_path.to_str().unwrap())
-        .expect("Failed to open database");
+    let db =
+        samplicity::db::Database::open(db_path.to_str().unwrap()).expect("Failed to open database");
 
     // The multi-UTXO confidential address
     let source_address = "tlq1pqd2c9c085t6du9dq940vnsh3cvxp5965r7ze6vtrjvxjh6s4e8ch9qy09vyn9zthmrn5tall466jy6phh9js6u56kh3drjhr34vwlk223mahga7vl7wr";
@@ -1113,14 +1103,20 @@ fn test_scenario_6_multi_utxo_spending() {
     let (source_addr_info, utxos) = get_address_with_utxos(&db, source_address);
 
     if utxos.len() < 2 {
-        println!("⚠️  Skipping test - need at least 2 UTXOs, found {}", utxos.len());
+        println!(
+            "⚠️  Skipping test - need at least 2 UTXOs, found {}",
+            utxos.len()
+        );
         return;
     }
 
     println!("Found {} UTXOs on source address:", utxos.len());
     let total_input: u64 = utxos.iter().map(|u| u.amount).sum();
     for (i, utxo) in utxos.iter().enumerate() {
-        println!("  [{i}] txid={}:{} amount={} sats", utxo.txid, utxo.vout, utxo.amount);
+        println!(
+            "  [{i}] txid={}:{} amount={} sats",
+            utxo.txid, utxo.vout, utxo.amount
+        );
     }
     println!("  Total: {total_input} sats");
 
@@ -1161,7 +1157,11 @@ fn test_scenario_6_multi_utxo_spending() {
         Some(&change_address),
     );
 
-    assert!(result.is_ok(), "Multi-UTXO spend should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Multi-UTXO spend should succeed: {:?}",
+        result.err()
+    );
     let (tx, preview) = result.unwrap();
 
     // Verify ALL UTXOs were consumed
@@ -1175,8 +1175,7 @@ fn test_scenario_6_multi_utxo_spending() {
 
     // Verify total input matches sum of all UTXOs
     assert_eq!(
-        preview.total_input,
-        total_input,
+        preview.total_input, total_input,
         "Preview total_input should match sum of all UTXOs"
     );
 
@@ -1184,7 +1183,10 @@ fn test_scenario_6_multi_utxo_spending() {
     println!("\nTransaction structure:");
     println!("  Inputs: {}", tx.input.len());
     println!("  Outputs: {}", tx.output.len());
-    println!("  Preview: send={} fee={} change={}", preview.amount, preview.fee, preview.change_amount);
+    println!(
+        "  Preview: send={} fee={} change={}",
+        preview.amount, preview.fee, preview.change_amount
+    );
 
     // Test mempool accept
     let tx_hex = transaction_to_hex(&tx);
@@ -1208,6 +1210,9 @@ fn test_scenario_6_multi_utxo_spending() {
     }
 
     println!("\n✅ SCENARIO 6 PASSED: Multi-UTXO Spending");
-    println!("   All {} UTXOs consumed in single transaction", utxos.len());
+    println!(
+        "   All {} UTXOs consumed in single transaction",
+        utxos.len()
+    );
     println!("   Transaction accepted by mempool (not broadcast)");
 }

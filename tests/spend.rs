@@ -137,7 +137,12 @@ fn test_calculate_spend_preview_with_change() {
     let preview = calculate_spend_preview("src", "dst", 50000, &utxos).unwrap();
     assert_eq!(preview.amount, 50000);
     // Fee is now dynamic based on tx size, just verify it's at least MIN_FEE_SATS
-    assert!(preview.fee >= MIN_FEE_SATS, "Fee {} should be >= MIN_FEE_SATS {}", preview.fee, MIN_FEE_SATS);
+    assert!(
+        preview.fee >= MIN_FEE_SATS,
+        "Fee {} should be >= MIN_FEE_SATS {}",
+        preview.fee,
+        MIN_FEE_SATS
+    );
     assert!(preview.has_change);
     // Change = total input - send amount - fee
     assert_eq!(preview.change_amount, 100_000 - 50_000 - preview.fee);
