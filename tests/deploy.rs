@@ -106,7 +106,11 @@ fn test_deploy_new_address_explicit() {
 fn test_deploy_new_address_confidential() {
     let address_params = get_address_params("regtest");
 
-    let result = deploy_new_address(P2PKH_PROGRAM_PATH, address_params, AddressType::Confidential);
+    let result = deploy_new_address(
+        P2PKH_PROGRAM_PATH,
+        address_params,
+        AddressType::Confidential,
+    );
     assert!(
         result.is_ok(),
         "deploy_new_address (confidential) failed: {:?}",

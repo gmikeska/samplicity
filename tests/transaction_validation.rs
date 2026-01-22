@@ -42,7 +42,7 @@ fn open_database() -> Database {
 /// Find an address with UTXOs that we can use for testing
 fn find_funded_address(db: &Database) -> Option<(StoredAddress, Vec<samplicity::db::StoredUtxo>)> {
     let addresses = db.get_all_addresses().ok()?;
-    
+
     for addr in addresses {
         let utxos = db.get_unspent_utxos(&addr.address).ok()?;
         if !utxos.is_empty() && utxos[0].amount > SEND_AMOUNT + 1000 {
@@ -62,9 +62,7 @@ fn get_mnemonic_for_address(db: &Database, address: &str) -> Option<String> {
 }
 
 /// Deploy a test destination address
-fn deploy_destination_address(
-    address_params: &'static musk::elements::AddressParams,
-) -> String {
+fn deploy_destination_address(address_params: &'static musk::elements::AddressParams) -> String {
     let deployed = deploy_new_address(P2PKH_PROGRAM_PATH, address_params, AddressType::Explicit)
         .expect("Failed to deploy destination address");
     deployed.address
@@ -89,16 +87,18 @@ fn test_decode_raw_transaction_structure() {
         println!("SKIPPED: No funded addresses found in database");
         return;
     };
-    
+
     let source_address = &source_addr_info.address;
     let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
         .expect("Invalid pk_hash hex")
         .try_into()
         .expect("Invalid pk_hash length");
-    
+
     println!("Using source address: {}", source_address);
-    println!("UTXO: txid={}, vout={}, amount={} sats", 
-             utxos[0].txid, utxos[0].vout, utxos[0].amount);
+    println!(
+        "UTXO: txid={}, vout={}, amount={} sats",
+        utxos[0].txid, utxos[0].vout, utxos[0].amount
+    );
 
     // 3. Get mnemonic for signing
     let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
@@ -113,8 +113,10 @@ fn test_decode_raw_transaction_structure() {
     // 5. Calculate spend preview
     let preview = calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1])
         .expect("Failed to calculate preview");
-    println!("Preview: amount={}, fee={}, change={}", 
-             preview.amount, preview.fee, preview.change_amount);
+    println!(
+        "Preview: amount={}, fee={}, change={}",
+        preview.amount, preview.fee, preview.change_amount
+    );
 
     // 6. Deploy change address if needed
     let change_address = if preview.has_change {
@@ -124,14 +126,14 @@ fn test_decode_raw_transaction_structure() {
     };
 
     // 7. Build transaction
-    let source_addr_parsed = musk::elements::Address::from_str(source_address)
-        .expect("Failed to parse source address");
+    let source_addr_parsed =
+        musk::elements::Address::from_str(source_address).expect("Failed to parse source address");
     let source_script = source_addr_parsed.script_pubkey();
-    
-    let dest_addr = musk::elements::Address::from_str(&dest_address)
-        .expect("Failed to parse dest address");
+
+    let dest_addr =
+        musk::elements::Address::from_str(&dest_address).expect("Failed to parse dest address");
     let dest_script = dest_addr.script_pubkey();
-    
+
     let change_script = change_address.as_ref().map(|addr| {
         musk::elements::Address::from_str(addr)
             .expect("Failed to parse change address")
@@ -218,16 +220,18 @@ fn test_mempool_accept_validates_spend() {
         println!("SKIPPED: No funded addresses found in database");
         return;
     };
-    
+
     let source_address = &source_addr_info.address;
     let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
         .expect("Invalid pk_hash hex")
         .try_into()
         .expect("Invalid pk_hash length");
-    
+
     println!("Using source address: {}", source_address);
-    println!("UTXO: txid={}, vout={}, amount={} sats", 
-             utxos[0].txid, utxos[0].vout, utxos[0].amount);
+    println!(
+        "UTXO: txid={}, vout={}, amount={} sats",
+        utxos[0].txid, utxos[0].vout, utxos[0].amount
+    );
 
     // 3. Get mnemonic
     let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
@@ -269,8 +273,10 @@ fn test_mempool_accept_validates_spend() {
 
     let tx_hex = transaction_to_hex(&tx);
     println!("Built transaction: {} bytes", tx_hex.len() / 2);
-    println!("Preview: amount={}, fee={}, change={}", 
-             final_preview.amount, final_preview.fee, final_preview.change_amount);
+    println!(
+        "Preview: amount={}, fee={}, change={}",
+        final_preview.amount, final_preview.fee, final_preview.change_amount
+    );
 
     // 6. Test mempool acceptance (DO NOT BROADCAST)
     let mempool_result = client
@@ -281,10 +287,16 @@ fn test_mempool_accept_validates_spend() {
     println!("{}", serde_json::to_string_pretty(&mempool_result).unwrap());
 
     // 7. Verify the result
-    assert!(!mempool_result.is_empty(), "testmempoolaccept should return a result");
-    
+    assert!(
+        !mempool_result.is_empty(),
+        "testmempoolaccept should return a result"
+    );
+
     let result = &mempool_result[0];
-    let allowed = result.get("allowed").and_then(|v| v.as_bool()).unwrap_or(false);
+    let allowed = result
+        .get("allowed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if allowed {
         println!("\n✓ Transaction ACCEPTED by mempool!");
@@ -317,7 +329,7 @@ fn test_transaction_roundtrip_decode() {
         println!("SKIPPED: No funded addresses found in database");
         return;
     };
-    
+
     let source_address = &source_addr_info.address;
     let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
         .expect("Invalid pk_hash hex")
@@ -333,7 +345,8 @@ fn test_transaction_roundtrip_decode() {
     let dest_address = deploy_destination_address(address_params);
 
     // Calculate preview
-    let preview = calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1]).unwrap();
+    let preview =
+        calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1]).unwrap();
     let change_address = if preview.has_change {
         Some(deploy_destination_address(address_params))
     } else {
@@ -346,7 +359,9 @@ fn test_transaction_roundtrip_decode() {
     let dest_addr = musk::elements::Address::from_str(&dest_address).unwrap();
     let dest_script = dest_addr.script_pubkey();
     let change_script = change_address.as_ref().map(|addr| {
-        musk::elements::Address::from_str(addr).unwrap().script_pubkey()
+        musk::elements::Address::from_str(addr)
+            .unwrap()
+            .script_pubkey()
     });
 
     let tx = build_and_sign_transaction(
@@ -361,7 +376,8 @@ fn test_transaction_roundtrip_decode() {
         change_script,
         preview.change_amount,
         genesis_hash,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Encode to hex
     let tx_hex_original = transaction_to_hex(&tx);
@@ -372,17 +388,23 @@ fn test_transaction_roundtrip_decode() {
     // Verify txid matches
     let decoded_txid = decoded.get("txid").and_then(|v| v.as_str()).unwrap();
     let expected_txid = tx.txid().to_string();
-    
-    println!("Original tx hex length: {} bytes", tx_hex_original.len() / 2);
+
+    println!(
+        "Original tx hex length: {} bytes",
+        tx_hex_original.len() / 2
+    );
     println!("Expected txid: {expected_txid}");
     println!("Decoded txid:  {decoded_txid}");
 
-    assert_eq!(decoded_txid, expected_txid, "Decoded txid should match original");
+    assert_eq!(
+        decoded_txid, expected_txid,
+        "Decoded txid should match original"
+    );
 
     // Verify version and locktime
     let version = decoded.get("version").and_then(|v| v.as_u64()).unwrap();
     let locktime = decoded.get("locktime").and_then(|v| v.as_u64()).unwrap();
-    
+
     assert_eq!(version, 2, "Transaction version should be 2");
     assert_eq!(locktime, 0, "Locktime should be 0");
 
@@ -408,7 +430,7 @@ fn test_verify_output_values() {
         println!("SKIPPED: No funded addresses found in database");
         return;
     };
-    
+
     let source_address = &source_addr_info.address;
     let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
         .expect("Invalid pk_hash hex")
@@ -425,7 +447,8 @@ fn test_verify_output_values() {
     let dest_address = deploy_destination_address(address_params);
 
     // Preview
-    let preview = calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1]).unwrap();
+    let preview =
+        calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1]).unwrap();
     let change_address = if preview.has_change {
         Some(deploy_destination_address(address_params))
     } else {
@@ -438,7 +461,9 @@ fn test_verify_output_values() {
     let dest_addr = musk::elements::Address::from_str(&dest_address).unwrap();
     let dest_script = dest_addr.script_pubkey();
     let change_script = change_address.as_ref().map(|addr| {
-        musk::elements::Address::from_str(addr).unwrap().script_pubkey()
+        musk::elements::Address::from_str(addr)
+            .unwrap()
+            .script_pubkey()
     });
 
     let tx = build_and_sign_transaction(
@@ -453,19 +478,23 @@ fn test_verify_output_values() {
         change_script,
         preview.change_amount,
         genesis_hash,
-    ).unwrap();
+    )
+    .unwrap();
 
     let tx_hex = transaction_to_hex(&tx);
     let decoded = client.decode_raw_transaction(&tx_hex).unwrap();
 
     // Extract output values
     let vout = decoded.get("vout").and_then(|v| v.as_array()).unwrap();
-    
+
     println!("Input amount: {} sats", input_amount);
     println!("Expected send: {} sats", SEND_AMOUNT);
     println!("Expected fee: {} sats", preview.fee);
     println!("Expected change: {} sats", preview.change_amount);
-    println!("Expected total outputs: {} sats", SEND_AMOUNT + preview.fee + preview.change_amount);
+    println!(
+        "Expected total outputs: {} sats",
+        SEND_AMOUNT + preview.fee + preview.change_amount
+    );
     println!("\nDecoded outputs:");
 
     let mut total_output_value: u64 = 0;
@@ -494,26 +523,34 @@ fn test_verify_output_values() {
             println!("  Output {i}: FEE = {} sats", value);
             found_fee = true;
         } else {
-            println!("  Output {i}: {} sats (script: {}...)", value, &script_hex[..script_hex.len().min(20)]);
+            println!(
+                "  Output {i}: {} sats (script: {}...)",
+                value,
+                &script_hex[..script_hex.len().min(20)]
+            );
         }
-        
+
         total_output_value += value;
     }
 
-    println!("\nTotal output value (including fee output): {} sats", total_output_value);
+    println!(
+        "\nTotal output value (including fee output): {} sats",
+        total_output_value
+    );
 
     // Verify conservation of value - fee is already included in outputs
     assert_eq!(
-        input_amount,
-        total_output_value,
+        input_amount, total_output_value,
         "Input amount should equal sum of all outputs (including fee)"
     );
 
     assert!(found_fee, "Should find fee output");
 
     println!("\n✓ Output values validated successfully");
-    println!("✓ Conservation of value verified: {} = {} + {} + {}", 
-             input_amount, SEND_AMOUNT, preview.change_amount, preview.fee);
+    println!(
+        "✓ Conservation of value verified: {} = {} + {} + {}",
+        input_amount, SEND_AMOUNT, preview.change_amount, preview.fee
+    );
 }
 
 // ============================================================================
@@ -531,7 +568,10 @@ fn test_detect_address_type_explicit_testnet() {
 fn test_detect_address_type_confidential_testnet() {
     // Confidential testnet addresses start with "tlq"
     let confidential_addr = "tlq1pqwq88n6llaqfl6xves5kg7dsefmq57z4yl0w5kpmz0sv2y2jz0terr2pwj7g0wel43gmsjyxmrwknr5c708mkumvd7kenxw5gkme4y7xkpyfv0rnu749";
-    assert_eq!(detect_address_type(confidential_addr), AddressType::Confidential);
+    assert_eq!(
+        detect_address_type(confidential_addr),
+        AddressType::Confidential
+    );
 }
 
 #[test]
@@ -544,8 +584,12 @@ fn test_detect_address_type_explicit_mainnet() {
 #[test]
 fn test_detect_address_type_confidential_mainnet() {
     // Confidential mainnet addresses start with "lq"
-    let confidential_addr = "lq1qq0000000000000000000000000000000000000000000000000000000000000000000000000000000000";
-    assert_eq!(detect_address_type(confidential_addr), AddressType::Confidential);
+    let confidential_addr =
+        "lq1qq0000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+    assert_eq!(
+        detect_address_type(confidential_addr),
+        AddressType::Confidential
+    );
 }
 
 // ============================================================================
@@ -576,7 +620,11 @@ fn test_explicit_source_produces_explicit_change() {
 
     // Verify it's detected as explicit
     let detected_type = detect_address_type(&source_address);
-    assert_eq!(detected_type, AddressType::Explicit, "Source should be detected as explicit");
+    assert_eq!(
+        detected_type,
+        AddressType::Explicit,
+        "Source should be detected as explicit"
+    );
 
     // Deploy a "change" address using the detected type
     let change_address = deploy_address_with_type(address_params, detected_type);
@@ -584,7 +632,11 @@ fn test_explicit_source_produces_explicit_change() {
 
     // Verify the change address is also explicit
     let change_type = detect_address_type(&change_address);
-    assert_eq!(change_type, AddressType::Explicit, "Change address should be explicit");
+    assert_eq!(
+        change_type,
+        AddressType::Explicit,
+        "Change address should be explicit"
+    );
 
     // Explicit addresses should start with "tex" on testnet
     assert!(
@@ -610,7 +662,11 @@ fn test_confidential_source_produces_confidential_change() {
 
     // Verify it's detected as confidential
     let detected_type = detect_address_type(&source_address);
-    assert_eq!(detected_type, AddressType::Confidential, "Source should be detected as confidential");
+    assert_eq!(
+        detected_type,
+        AddressType::Confidential,
+        "Source should be detected as confidential"
+    );
 
     // Deploy a "change" address using the detected type
     let change_address = deploy_address_with_type(address_params, detected_type);
@@ -618,7 +674,11 @@ fn test_confidential_source_produces_confidential_change() {
 
     // Verify the change address is also confidential
     let change_type = detect_address_type(&change_address);
-    assert_eq!(change_type, AddressType::Confidential, "Change address should be confidential");
+    assert_eq!(
+        change_type,
+        AddressType::Confidential,
+        "Change address should be confidential"
+    );
 
     // Confidential addresses should start with "tlq" on testnet
     assert!(
@@ -645,7 +705,10 @@ fn test_spend_from_confidential_address_uses_confidential_change() {
     let addresses = db.get_all_addresses().expect("Failed to get addresses");
     let confidential_funded = addresses.iter().find(|addr| {
         detect_address_type(&addr.address) == AddressType::Confidential
-            && db.get_unspent_utxos(&addr.address).map(|u| !u.is_empty()).unwrap_or(false)
+            && db
+                .get_unspent_utxos(&addr.address)
+                .map(|u| !u.is_empty())
+                .unwrap_or(false)
     });
 
     let Some(source_addr_info) = confidential_funded else {
@@ -654,7 +717,9 @@ fn test_spend_from_confidential_address_uses_confidential_change() {
     };
 
     let source_address = &source_addr_info.address;
-    let mut utxos = db.get_unspent_utxos(source_address).expect("Failed to get UTXOs");
+    let mut utxos = db
+        .get_unspent_utxos(source_address)
+        .expect("Failed to get UTXOs");
     utxos.sort_by(|a, b| b.amount.cmp(&a.amount));
 
     if utxos[0].amount < SEND_AMOUNT + 1000 {
@@ -690,7 +755,7 @@ fn test_spend_from_confidential_address_uses_confidential_change() {
     let change_address = if preview.has_change {
         let addr = deploy_address_with_type(address_params, source_type);
         println!("Change address (should be confidential): {addr}");
-        
+
         // Verify change address is confidential
         let change_type = detect_address_type(&addr);
         assert_eq!(
@@ -713,7 +778,9 @@ fn test_spend_from_confidential_address_uses_confidential_change() {
     let dest_addr = musk::elements::Address::from_str(&dest_address).unwrap();
     let dest_script = dest_addr.script_pubkey();
     let change_script = change_address.as_ref().map(|addr| {
-        musk::elements::Address::from_str(addr).unwrap().script_pubkey()
+        musk::elements::Address::from_str(addr)
+            .unwrap()
+            .script_pubkey()
     });
 
     let tx = build_and_sign_transaction(
