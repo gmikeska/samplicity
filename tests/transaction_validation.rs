@@ -475,7 +475,7 @@ fn test_verify_output_values() {
         // Get value - may be explicit or blinded
         let value = if let Some(v) = output.get("value").and_then(|v| v.as_f64()) {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let sats = (v * 100_000_000.0) as u64;
+            let sats = (v * 100_000_000.0).round() as u64;
             sats
         } else {
             0 // Confidential output
