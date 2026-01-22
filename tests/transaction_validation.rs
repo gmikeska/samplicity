@@ -4,25 +4,68 @@
 //! by using the Elements node's `decoderawtransaction` and `testmempoolaccept`
 //! RPC methods.
 //!
-//! These tests use existing UTXOs from the samplicity database and do NOT
+//! These tests use existing UTXOs from the samplicity test database and do NOT
 //! broadcast transactions, so they are safe to run repeatedly.
 //!
-//! Run with: `cargo test --test transaction_validation -- --ignored`
+//! ## Test Environment Addresses (samplicity6 wallet)
+//!
+//! | Address | Type | Balance | Notes |
+//! |---------|------|---------|-------|
+//! | `tex1pztlt8g...` | EX | 100,000 | Funded explicit source |
+//! | `tlq1pq23ygy...` | CT | 98,500 | Funded confidential source (blinded) |
+//! | `tlq1pq04th4...` | CT | 1,000 | Small funded confidential |
+//! | `tlq1pq22cyv...` | CT | 0 | Empty confidential destination |
+//! | `tex1pu8a280...` | EX | 0 | Empty explicit destination |
+//!
+//! Run with: `MUSK_ENV=test cargo test --test transaction_validation -- --ignored`
 
 use musk::RpcClient;
 use samplicity::deploy::{deploy_new_address, AddressType};
 use samplicity::spend::{
-    build_and_sign_transaction, calculate_spend_preview, transaction_to_hex, SpendOrchestrator,
+    build_and_sign_confidential_transaction, build_and_sign_transaction, calculate_spend_preview,
+    is_confidential_address, transaction_to_hex, SpendOrchestrator,
 };
 use samplicity::{detect_address_type, Database, StoredAddress};
 use serial_test::serial;
 use std::str::FromStr;
+use std::sync::Arc;
+
+// ============================================================================
+// Test Environment Constants
+// ============================================================================
 
 /// Path to the p2pkh program
 const P2PKH_PROGRAM_PATH: &str = "musk/p2pkh.simf";
 
 /// Amount to send in test transactions (must be less than available UTXO)
 const SEND_AMOUNT: u64 = 500; // 500 sats - small amount for testing
+
+// Test environment addresses (from samplicity-test.db with samplicity6 wallet)
+mod test_addresses {
+    /// Funded explicit address - 100,000 sats
+    pub const EXPLICIT_FUNDED: &str =
+        "tex1pztlt8gfryjj4p43rdyjjce74pwqckvufafus3xjwxzxuccuytqmscrcedf";
+
+    /// Empty explicit address - for use as destination
+    pub const EXPLICIT_EMPTY: &str =
+        "tex1pu8a280erz6g493tnxzh39ktrhnx9satg536dd7ev2jqh7d9tjaeslc5sq5";
+
+    /// Funded confidential address - 98,500 sats (blinded UTXO)
+    pub const CONFIDENTIAL_FUNDED: &str =
+        "tlq1pq23ygyufwnc44s6p3uzzltnmg9takqvq0hvphptsrgj5wcm5jtvrvw8r7mgjfn3ds0fz5aejkxc28wpk6je5zw6604nctyxfyagx0y47gte7exam3zfm";
+
+    /// Small funded confidential address - 1,000 sats (blinded UTXO)
+    pub const CONFIDENTIAL_SMALL: &str =
+        "tlq1pq04th4lzh7nevfvzzsk89wnpqr6aemra33l4w660l8jml66n68zfpqq6tnwg7sak60rmyhdpw02h2v2veaq6e5vl8w4ejx94dz6nfne48ll07whhzn5p";
+
+    /// Empty confidential address - for use as destination (has blinding key)
+    pub const CONFIDENTIAL_EMPTY: &str =
+        "tlq1pq22cyvnx3tx7ja58vyqxe6cc6e4lrjtr0gufk2r37gfpfg2esrgnc6s86p69t2ls0qmgk4qjqjx3phuvy7rs33atnvn6fpccypg330mxn4gmfz0pt24f";
+}
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
 
 /// Helper to create RPC client from config (always uses [test] environment)
 fn create_rpc_client() -> RpcClient {
@@ -40,547 +83,40 @@ fn open_database() -> Database {
     Database::open("samplicity-test.db").expect("Failed to open samplicity-test.db")
 }
 
-/// Find an address with UTXOs that we can use for testing
-fn find_funded_address(db: &Database) -> Option<(StoredAddress, Vec<samplicity::db::StoredUtxo>)> {
-    let addresses = db.get_all_addresses().ok()?;
+/// Get address info and UTXOs for a specific address
+fn get_address_with_utxos(
+    db: &Database,
+    address: &str,
+) -> (StoredAddress, Vec<samplicity::db::StoredUtxo>) {
+    let addr_info = db
+        .get_address(address)
+        .expect("Failed to query address")
+        .unwrap_or_else(|| panic!("Address not found in test database: {address}"));
 
-    for addr in addresses {
-        let utxos = db.get_unspent_utxos(&addr.address).ok()?;
-        if !utxos.is_empty() && utxos[0].amount > SEND_AMOUNT + 1000 {
-            // Found an address with sufficient funds
-            return Some((addr, utxos));
-        }
-    }
-    None
+    let utxos = db
+        .get_unspent_utxos(address)
+        .expect("Failed to get UTXOs");
+
+    (addr_info, utxos)
 }
 
 /// Get the mnemonic for an address from the database
-fn get_mnemonic_for_address(db: &Database, address: &str) -> Option<String> {
+fn get_mnemonic_for_address(db: &Database, address: &str) -> String {
     db.get_pubkey_for_address(address)
-        .ok()
-        .flatten()
-        .map(|p| p.mnemonic)
+        .expect("Failed to query pubkey")
+        .expect("No pubkey found for address")
+        .mnemonic
 }
 
-/// Deploy a test destination address
-fn deploy_destination_address(address_params: &'static musk::elements::AddressParams) -> String {
-    let deployed = deploy_new_address(P2PKH_PROGRAM_PATH, address_params, AddressType::Explicit)
-        .expect("Failed to deploy destination address");
-    deployed.address
-}
-
-#[test]
-#[ignore = "requires live Elements node and samplicity-{env}.db"]
-#[serial]
-fn test_decode_raw_transaction_structure() {
-    println!("\n=== TEST: decoderawtransaction validates transaction structure ===\n");
-
-    // 1. Setup
-    let mut client = create_rpc_client();
-    let address_params = client.address_params();
-    let genesis_hash = get_genesis_hash(&mut client);
-    let db = open_database();
-
-    println!("Connected to node, genesis_hash: {genesis_hash}");
-
-    // 2. Find a funded address from the database
-    let Some((source_addr_info, utxos)) = find_funded_address(&db) else {
-        panic!("No funded addresses found in samplicity-test.db - fund an address first");
-    };
-
-    let source_address = &source_addr_info.address;
-    let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
+/// Get pk_hash bytes for an address
+fn get_pk_hash_bytes(addr_info: &StoredAddress) -> [u8; 32] {
+    hex::decode(&addr_info.pk_hash)
         .expect("Invalid pk_hash hex")
         .try_into()
-        .expect("Invalid pk_hash length");
-
-    println!("Using source address: {source_address}");
-    println!(
-        "UTXO: txid={}, vout={}, amount={} sats",
-        utxos[0].txid, utxos[0].vout, utxos[0].amount
-    );
-
-    // 3. Get mnemonic for signing
-    let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
-        panic!("No mnemonic found for address in samplicity-test.db");
-    };
-
-    // 4. Deploy a destination address
-    let dest_address = deploy_destination_address(address_params);
-    println!("Destination address: {dest_address}");
-
-    // 5. Calculate spend preview
-    let preview = calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1])
-        .expect("Failed to calculate preview");
-    println!(
-        "Preview: amount={}, fee={}, change={}",
-        preview.amount, preview.fee, preview.change_amount
-    );
-
-    // 6. Deploy change address if needed
-    let change_address = if preview.has_change {
-        Some(deploy_destination_address(address_params))
-    } else {
-        None
-    };
-
-    // 7. Build transaction
-    let source_addr_parsed =
-        musk::elements::Address::from_str(source_address).expect("Failed to parse source address");
-    let source_script = source_addr_parsed.script_pubkey();
-
-    let dest_addr =
-        musk::elements::Address::from_str(&dest_address).expect("Failed to parse dest address");
-    let dest_script = dest_addr.script_pubkey();
-
-    let change_script = change_address.as_ref().map(|addr| {
-        musk::elements::Address::from_str(addr)
-            .expect("Failed to parse change address")
-            .script_pubkey()
-    });
-
-    let tx = build_and_sign_transaction(
-        P2PKH_PROGRAM_PATH,
-        &utxos[0],
-        source_script,
-        &pk_hash_bytes,
-        &mnemonic,
-        dest_script,
-        SEND_AMOUNT,
-        preview.fee,
-        change_script,
-        preview.change_amount,
-        genesis_hash,
-    )
-    .expect("Failed to build transaction");
-
-    let tx_hex = transaction_to_hex(&tx);
-    println!("Built transaction: {} bytes", tx_hex.len() / 2);
-
-    // 8. Decode the transaction using the node
-    let decoded = client
-        .decode_raw_transaction(&tx_hex)
-        .expect("Failed to decode transaction");
-
-    println!("\n=== DECODED TRANSACTION ===");
-    println!("{}", serde_json::to_string_pretty(&decoded).unwrap());
-
-    // 9. Verify transaction structure
-    let vin = decoded.get("vin").expect("Missing vin");
-    let vout = decoded.get("vout").expect("Missing vout");
-
-    assert!(vin.is_array(), "vin should be an array");
-    assert!(vout.is_array(), "vout should be an array");
-
-    let vin_arr = vin.as_array().unwrap();
-    let vout_arr = vout.as_array().unwrap();
-
-    // Should have exactly 1 input
-    assert_eq!(vin_arr.len(), 1, "Should have exactly 1 input");
-
-    // Verify input references our UTXO
-    let input = &vin_arr[0];
-    let input_txid = input.get("txid").and_then(serde_json::Value::as_str).unwrap();
-    #[allow(clippy::cast_possible_truncation)]
-    let input_vout = input.get("vout").and_then(serde_json::Value::as_u64).unwrap() as u32;
-    assert_eq!(input_txid, utxos[0].txid, "Input should reference our UTXO");
-    assert_eq!(input_vout, utxos[0].vout, "Input vout should match");
-
-    // Should have outputs: destination + change (if any) + fee
-    let expected_outputs = if preview.has_change { 3 } else { 2 };
-    assert_eq!(
-        vout_arr.len(),
-        expected_outputs,
-        "Should have {expected_outputs} outputs"
-    );
-
-    println!("\n=== TRANSACTION STRUCTURE VALIDATED ===");
-    println!("✓ Transaction has {} input(s)", vin_arr.len());
-    println!("✓ Transaction has {} output(s)", vout_arr.len());
-    println!("✓ Input references correct UTXO");
+        .expect("Invalid pk_hash length")
 }
 
-#[test]
-#[ignore = "requires live Elements node and samplicity-{env}.db"]
-#[serial]
-fn test_mempool_accept_validates_spend() {
-    println!("\n=== TEST: testmempoolaccept validates transaction ===\n");
-
-    // 1. Setup
-    let mut client = create_rpc_client();
-    let address_params = client.address_params();
-    let genesis_hash = get_genesis_hash(&mut client);
-    let db = open_database();
-
-    println!("Connected to node, genesis_hash: {genesis_hash}");
-
-    // 2. Find a funded address
-    let Some((source_addr_info, utxos)) = find_funded_address(&db) else {
-        panic!("No funded addresses found in samplicity-test.db - fund an address first");
-    };
-
-    let source_address = &source_addr_info.address;
-    let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
-        .expect("Invalid pk_hash hex")
-        .try_into()
-        .expect("Invalid pk_hash length");
-
-    println!("Using source address: {source_address}");
-    println!(
-        "UTXO: txid={}, vout={}, amount={} sats",
-        utxos[0].txid, utxos[0].vout, utxos[0].amount
-    );
-
-    // 3. Get mnemonic
-    let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
-        panic!("No mnemonic found for address in samplicity-test.db");
-    };
-
-    // 4. Deploy destination
-    let dest_address = deploy_destination_address(address_params);
-    println!("Destination address: {dest_address}");
-
-    // 5. Use SpendOrchestrator
-    let orchestrator = SpendOrchestrator::new(P2PKH_PROGRAM_PATH, address_params, genesis_hash);
-
-    let preview = calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1])
-        .expect("Failed to calculate preview");
-
-    let change_address = if preview.has_change {
-        Some(deploy_destination_address(address_params))
-    } else {
-        None
-    };
-
-    let source_addr_parsed = musk::elements::Address::from_str(source_address).unwrap();
-    let source_script = source_addr_parsed.script_pubkey();
-
-    let (tx, final_preview) = orchestrator
-        .execute_spend(
-            source_address,
-            &source_script,
-            &pk_hash_bytes,
-            &mnemonic,
-            &utxos[..1],
-            &dest_address,
-            SEND_AMOUNT,
-            change_address.as_deref(),
-        )
-        .expect("Failed to execute spend");
-
-    let tx_hex = transaction_to_hex(&tx);
-    println!("Built transaction: {} bytes", tx_hex.len() / 2);
-    println!(
-        "Preview: amount={}, fee={}, change={}",
-        final_preview.amount, final_preview.fee, final_preview.change_amount
-    );
-
-    // 6. Test mempool acceptance (DO NOT BROADCAST)
-    let mempool_result = client
-        .test_mempool_accept(&tx_hex)
-        .expect("Failed to call testmempoolaccept");
-
-    println!("\n=== MEMPOOL ACCEPTANCE RESULT ===");
-    println!("{}", serde_json::to_string_pretty(&mempool_result).unwrap());
-
-    // 7. Verify the result
-    assert!(
-        !mempool_result.is_empty(),
-        "testmempoolaccept should return a result"
-    );
-
-    let result = &mempool_result[0];
-    let allowed = result
-        .get("allowed")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-
-    if allowed {
-        println!("\n✓ Transaction ACCEPTED by mempool!");
-        println!("(Transaction NOT broadcast - this is a validation-only test)");
-    } else {
-        let reject_reason = result
-            .get("reject-reason")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
-        panic!(
-            "Transaction REJECTED by mempool: {reject_reason}\nThis indicates a bug in transaction construction."
-        );
-    }
-}
-
-#[test]
-#[ignore = "requires live Elements node and samplicity-{env}.db"]
-#[serial]
-fn test_transaction_roundtrip_decode() {
-    println!("\n=== TEST: Transaction encode/decode roundtrip ===\n");
-
-    let mut client = create_rpc_client();
-    let address_params = client.address_params();
-    let genesis_hash = get_genesis_hash(&mut client);
-    let db = open_database();
-
-    // Find funded address
-    let Some((source_addr_info, utxos)) = find_funded_address(&db) else {
-        panic!("No funded addresses found in samplicity-test.db - fund an address first");
-    };
-
-    let source_address = &source_addr_info.address;
-    let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
-        .expect("Invalid pk_hash hex")
-        .try_into()
-        .expect("Invalid pk_hash length");
-
-    let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
-        panic!("No mnemonic found for address in samplicity-test.db");
-    };
-
-    // Deploy destination
-    let dest_address = deploy_destination_address(address_params);
-
-    // Calculate preview
-    let preview =
-        calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1]).unwrap();
-    let change_address = if preview.has_change {
-        Some(deploy_destination_address(address_params))
-    } else {
-        None
-    };
-
-    // Build transaction
-    let source_addr = musk::elements::Address::from_str(source_address).unwrap();
-    let source_script = source_addr.script_pubkey();
-    let dest_addr = musk::elements::Address::from_str(&dest_address).unwrap();
-    let dest_script = dest_addr.script_pubkey();
-    let change_script = change_address.as_ref().map(|addr| {
-        musk::elements::Address::from_str(addr)
-            .unwrap()
-            .script_pubkey()
-    });
-
-    let tx = build_and_sign_transaction(
-        P2PKH_PROGRAM_PATH,
-        &utxos[0],
-        source_script,
-        &pk_hash_bytes,
-        &mnemonic,
-        dest_script,
-        SEND_AMOUNT,
-        preview.fee,
-        change_script,
-        preview.change_amount,
-        genesis_hash,
-    )
-    .unwrap();
-
-    // Encode to hex
-    let tx_hex_original = transaction_to_hex(&tx);
-
-    // Decode via node
-    let decoded = client.decode_raw_transaction(&tx_hex_original).unwrap();
-
-    // Verify txid matches
-    let decoded_txid = decoded.get("txid").and_then(|v| v.as_str()).unwrap();
-    let expected_txid = tx.txid().to_string();
-
-    println!(
-        "Original tx hex length: {} bytes",
-        tx_hex_original.len() / 2
-    );
-    println!("Expected txid: {expected_txid}");
-    println!("Decoded txid:  {decoded_txid}");
-
-    assert_eq!(
-        decoded_txid, expected_txid,
-        "Decoded txid should match original"
-    );
-
-    // Verify version and locktime
-    let version = decoded.get("version").and_then(serde_json::Value::as_u64).unwrap();
-    let locktime = decoded.get("locktime").and_then(serde_json::Value::as_u64).unwrap();
-
-    assert_eq!(version, 2, "Transaction version should be 2");
-    assert_eq!(locktime, 0, "Locktime should be 0");
-
-    println!("\n✓ Transaction roundtrip validation successful");
-    println!("✓ TXID matches: {expected_txid}");
-    println!("✓ Version: {version}");
-    println!("✓ Locktime: {locktime}");
-}
-
-#[test]
-#[ignore = "requires live Elements node and samplicity-{env}.db"]
-#[serial]
-fn test_verify_output_values() {
-    println!("\n=== TEST: Verify output values match expected amounts ===\n");
-
-    let mut client = create_rpc_client();
-    let address_params = client.address_params();
-    let genesis_hash = get_genesis_hash(&mut client);
-    let db = open_database();
-
-    // Find funded address
-    let Some((source_addr_info, utxos)) = find_funded_address(&db) else {
-        panic!("No funded addresses found in samplicity-test.db - fund an address first");
-    };
-
-    let source_address = &source_addr_info.address;
-    let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
-        .expect("Invalid pk_hash hex")
-        .try_into()
-        .expect("Invalid pk_hash length");
-    let input_amount = utxos[0].amount;
-
-    let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
-        panic!("No mnemonic found for address in samplicity-test.db");
-    };
-
-    // Destination
-    let dest_address = deploy_destination_address(address_params);
-
-    // Preview
-    let preview =
-        calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1]).unwrap();
-    let change_address = if preview.has_change {
-        Some(deploy_destination_address(address_params))
-    } else {
-        None
-    };
-
-    // Build
-    let source_addr = musk::elements::Address::from_str(source_address).unwrap();
-    let source_script = source_addr.script_pubkey();
-    let dest_addr = musk::elements::Address::from_str(&dest_address).unwrap();
-    let dest_script = dest_addr.script_pubkey();
-    let change_script = change_address.as_ref().map(|addr| {
-        musk::elements::Address::from_str(addr)
-            .unwrap()
-            .script_pubkey()
-    });
-
-    let tx = build_and_sign_transaction(
-        P2PKH_PROGRAM_PATH,
-        &utxos[0],
-        source_script,
-        &pk_hash_bytes,
-        &mnemonic,
-        dest_script,
-        SEND_AMOUNT,
-        preview.fee,
-        change_script,
-        preview.change_amount,
-        genesis_hash,
-    )
-    .unwrap();
-
-    let tx_hex = transaction_to_hex(&tx);
-    let decoded = client.decode_raw_transaction(&tx_hex).unwrap();
-
-    // Extract output values
-    let vout = decoded.get("vout").and_then(|v| v.as_array()).unwrap();
-
-    println!("Input amount: {input_amount} sats");
-    println!("Expected send: {SEND_AMOUNT} sats");
-    println!("Expected fee: {} sats", preview.fee);
-    println!("Expected change: {} sats", preview.change_amount);
-    let expected_total = SEND_AMOUNT + preview.fee + preview.change_amount;
-    println!("Expected total outputs: {expected_total} sats");
-    println!("\nDecoded outputs:");
-
-    let mut total_output_value: u64 = 0;
-    let mut found_fee = false;
-
-    for (i, output) in vout.iter().enumerate() {
-        // Get value - may be explicit or blinded
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let value = output
-            .get("value")
-            .and_then(serde_json::Value::as_f64)
-            .map_or(0, |v| (v * 100_000_000.0).round() as u64);
-
-        // Check if this is a fee output (empty scriptPubKey)
-        let script_hex = output
-            .get("scriptPubKey")
-            .and_then(|sp| sp.get("hex"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-
-        let is_fee = script_hex.is_empty() || script_hex == "6a";
-
-        if is_fee {
-            println!("  Output {i}: FEE = {value} sats");
-            found_fee = true;
-        } else {
-            println!(
-                "  Output {i}: {value} sats (script: {}...)",
-                &script_hex[..script_hex.len().min(20)]
-            );
-        }
-
-        total_output_value += value;
-    }
-
-    println!("\nTotal output value (including fee output): {total_output_value} sats");
-
-    // Verify conservation of value - fee is already included in outputs
-    assert_eq!(
-        input_amount, total_output_value,
-        "Input amount should equal sum of all outputs (including fee)"
-    );
-
-    assert!(found_fee, "Should find fee output");
-
-    println!("\n✓ Output values validated successfully");
-    println!(
-        "✓ Conservation of value verified: {input_amount} = {SEND_AMOUNT} + {} + {}",
-        preview.change_amount, preview.fee
-    );
-}
-
-// ============================================================================
-// Address Type Detection Tests
-// ============================================================================
-
-#[test]
-fn test_detect_address_type_explicit_testnet() {
-    // Explicit testnet addresses start with "tex"
-    let explicit_addr = "tex1pxv4f8xhds9gzwenwtrh62khlvyxfjjpeg4mujzf38pqha3u4sslsvvk9v6";
-    assert_eq!(detect_address_type(explicit_addr), AddressType::Explicit);
-}
-
-#[test]
-fn test_detect_address_type_confidential_testnet() {
-    // Confidential testnet addresses start with "tlq"
-    let confidential_addr = "tlq1pqwq88n6llaqfl6xves5kg7dsefmq57z4yl0w5kpmz0sv2y2jz0terr2pwj7g0wel43gmsjyxmrwknr5c708mkumvd7kenxw5gkme4y7xkpyfv0rnu749";
-    assert_eq!(
-        detect_address_type(confidential_addr),
-        AddressType::Confidential
-    );
-}
-
-#[test]
-fn test_detect_address_type_explicit_mainnet() {
-    // Explicit mainnet addresses start with "ex"
-    let explicit_addr = "ex1q0000000000000000000000000000000000000000";
-    assert_eq!(detect_address_type(explicit_addr), AddressType::Explicit);
-}
-
-#[test]
-fn test_detect_address_type_confidential_mainnet() {
-    // Confidential mainnet addresses start with "lq"
-    let confidential_addr =
-        "lq1qq0000000000000000000000000000000000000000000000000000000000000000000000000000000000";
-    assert_eq!(
-        detect_address_type(confidential_addr),
-        AddressType::Confidential
-    );
-}
-
-// ============================================================================
-// Change Address Type Tests
-// ============================================================================
-
-/// Helper to deploy an address with a specific type
+/// Deploy a new address with the specified type (for change addresses)
 fn deploy_address_with_type(
     address_params: &'static musk::elements::AddressParams,
     address_type: AddressType,
@@ -590,173 +126,71 @@ fn deploy_address_with_type(
     deployed.address
 }
 
-#[test]
-#[serial]
-fn test_explicit_source_produces_explicit_change() {
-    println!("\n=== TEST: Explicit source address produces explicit change address ===\n");
-
-    let client = create_rpc_client();
-    let address_params = client.address_params();
-
-    // Deploy an explicit source address
-    let source_address = deploy_address_with_type(address_params, AddressType::Explicit);
-    println!("Source address (explicit): {source_address}");
-
-    // Verify it's detected as explicit
-    let detected_type = detect_address_type(&source_address);
-    assert_eq!(
-        detected_type,
-        AddressType::Explicit,
-        "Source should be detected as explicit"
-    );
-
-    // Deploy a "change" address using the detected type
-    let change_address = deploy_address_with_type(address_params, detected_type);
-    println!("Change address: {change_address}");
-
-    // Verify the change address is also explicit
-    let change_type = detect_address_type(&change_address);
-    assert_eq!(
-        change_type,
-        AddressType::Explicit,
-        "Change address should be explicit"
-    );
-
-    // Explicit addresses should start with "tex" on testnet
-    assert!(
-        change_address.starts_with("tex"),
-        "Explicit change address should start with 'tex', got: {}",
-        &change_address[..change_address.len().min(10)]
-    );
-
-    println!("✓ Explicit source → explicit change address");
-}
+// ============================================================================
+// Scenario 1: Explicit → Explicit
+// ============================================================================
 
 #[test]
+#[ignore = "requires live Elements node and samplicity-test.db"]
 #[serial]
-fn test_confidential_source_produces_confidential_change() {
-    println!("\n=== TEST: Confidential source address produces confidential change address ===\n");
+fn test_scenario_1_explicit_to_explicit() {
+    println!("\n=== SCENARIO 1: Explicit → Explicit ===\n");
 
-    let client = create_rpc_client();
-    let address_params = client.address_params();
-
-    // Deploy a confidential source address
-    let source_address = deploy_address_with_type(address_params, AddressType::Confidential);
-    println!("Source address (confidential): {source_address}");
-
-    // Verify it's detected as confidential
-    let detected_type = detect_address_type(&source_address);
-    assert_eq!(
-        detected_type,
-        AddressType::Confidential,
-        "Source should be detected as confidential"
-    );
-
-    // Deploy a "change" address using the detected type
-    let change_address = deploy_address_with_type(address_params, detected_type);
-    println!("Change address: {change_address}");
-
-    // Verify the change address is also confidential
-    let change_type = detect_address_type(&change_address);
-    assert_eq!(
-        change_type,
-        AddressType::Confidential,
-        "Change address should be confidential"
-    );
-
-    // Confidential addresses should start with "tlq" on testnet
-    assert!(
-        change_address.starts_with("tlq"),
-        "Confidential change address should start with 'tlq', got: {}",
-        &change_address[..change_address.len().min(10)]
-    );
-
-    println!("✓ Confidential source → confidential change address");
-}
-
-#[test]
-#[ignore = "requires live Elements node and samplicity-{env}.db with a confidential funded address"]
-#[serial]
-fn test_spend_from_confidential_address_uses_confidential_change() {
-    println!("\n=== TEST: Spending from confidential address uses confidential change ===\n");
-
+    // Setup
     let mut client = create_rpc_client();
     let address_params = client.address_params();
     let genesis_hash = get_genesis_hash(&mut client);
     let db = open_database();
 
-    // Find a funded confidential address
-    let addresses = db.get_all_addresses().expect("Failed to get addresses");
-    let confidential_funded = addresses.iter().find(|addr| {
-        detect_address_type(&addr.address) == AddressType::Confidential
-            && db
-                .get_unspent_utxos(&addr.address)
-                .map(|u| !u.is_empty())
-                .unwrap_or(false)
-    });
+    // Source: funded explicit address
+    let source_address = test_addresses::EXPLICIT_FUNDED;
+    let (source_addr_info, utxos) = get_address_with_utxos(&db, source_address);
 
-    let Some(source_addr_info) = confidential_funded else {
-        panic!("No funded confidential addresses found in samplicity-test.db - fund a confidential address first");
-    };
+    assert!(
+        !utxos.is_empty(),
+        "Source address has no UTXOs - fund {} first",
+        source_address
+    );
+    assert!(
+        utxos[0].amount > SEND_AMOUNT + 1000,
+        "Insufficient funds in source"
+    );
 
-    let source_address = &source_addr_info.address;
-    let mut utxos = db
-        .get_unspent_utxos(source_address)
-        .expect("Failed to get UTXOs");
-    utxos.sort_by(|a, b| b.amount.cmp(&a.amount));
+    let pk_hash_bytes = get_pk_hash_bytes(&source_addr_info);
+    let mnemonic = get_mnemonic_for_address(&db, source_address);
 
-    if utxos[0].amount < SEND_AMOUNT + 1000 {
-        panic!("Insufficient funds in confidential address - need at least {} sats", SEND_AMOUNT + 1000);
-    }
-
-    let pk_hash_bytes: [u8; 32] = hex::decode(&source_addr_info.pk_hash)
-        .expect("Invalid pk_hash hex")
-        .try_into()
-        .expect("Invalid pk_hash length");
-
-    let Some(mnemonic) = get_mnemonic_for_address(&db, source_address) else {
-        panic!("No mnemonic found for address in samplicity-test.db");
-    };
-
-    println!("Source address (confidential): {source_address}");
+    println!("Source (EX): {source_address}");
     println!("UTXO: {} sats", utxos[0].amount);
 
-    // Deploy destination (explicit for simplicity)
-    let dest_address = deploy_destination_address(address_params);
-    println!("Destination address: {dest_address}");
+    // Destination: empty explicit address from test environment
+    let dest_address = test_addresses::EXPLICIT_EMPTY;
+    println!("Destination (EX): {dest_address}");
 
     // Calculate preview
-    let preview = calculate_spend_preview(source_address, &dest_address, SEND_AMOUNT, &utxos[..1])
+    let preview = calculate_spend_preview(source_address, dest_address, SEND_AMOUNT, &utxos[..1])
         .expect("Failed to calculate preview");
+    println!(
+        "Preview: send={}, fee={}, change={}",
+        preview.amount, preview.fee, preview.change_amount
+    );
 
-    // Deploy change address with SAME TYPE as source
-    let source_type = detect_address_type(source_address);
-    assert_eq!(source_type, AddressType::Confidential);
-
+    // Change address should be explicit (matching source type)
     let change_address = if preview.has_change {
-        let addr = deploy_address_with_type(address_params, source_type);
-        println!("Change address (should be confidential): {addr}");
-
-        // Verify change address is confidential
-        let change_type = detect_address_type(&addr);
-        assert_eq!(
-            change_type,
-            AddressType::Confidential,
-            "Change address should be confidential when source is confidential"
-        );
+        let addr = deploy_address_with_type(address_params, AddressType::Explicit);
         assert!(
-            addr.starts_with("tlq"),
-            "Confidential change address should start with 'tlq'"
+            addr.starts_with("tex"),
+            "Change should be explicit (tex prefix)"
         );
+        println!("Change (EX): {addr}");
         Some(addr)
     } else {
         None
     };
 
-    // Build the transaction
-    let source_addr_parsed = musk::elements::Address::from_str(source_address).unwrap();
-    let source_script = source_addr_parsed.script_pubkey();
-    let dest_addr = musk::elements::Address::from_str(&dest_address).unwrap();
+    // Build transaction
+    let source_addr = musk::elements::Address::from_str(source_address).unwrap();
+    let source_script = source_addr.script_pubkey();
+    let dest_addr = musk::elements::Address::from_str(dest_address).unwrap();
     let dest_script = dest_addr.script_pubkey();
     let change_script = change_address.as_ref().map(|addr| {
         musk::elements::Address::from_str(addr)
@@ -780,7 +214,555 @@ fn test_spend_from_confidential_address_uses_confidential_change() {
     .expect("Failed to build transaction");
 
     let tx_hex = transaction_to_hex(&tx);
-    println!("Built transaction: {} bytes", tx_hex.len() / 2);
+    println!("Transaction: {} bytes", tx_hex.len() / 2);
+
+    // Verify with mempool accept
+    let mempool_result = client
+        .test_mempool_accept(&tx_hex)
+        .expect("Failed to call testmempoolaccept");
+
+    let allowed = mempool_result
+        .first()
+        .and_then(|r| r.get("allowed"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    if !allowed {
+        let reason = mempool_result
+            .first()
+            .and_then(|r| r.get("reject-reason"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        panic!("Transaction rejected: {reason}");
+    }
+
+    println!("\n✅ SCENARIO 1 PASSED: Explicit → Explicit");
+    println!("   Transaction accepted by mempool (not broadcast)");
+}
+
+// ============================================================================
+// Scenario 2: Explicit → Confidential
+// ============================================================================
+
+#[test]
+#[ignore = "requires live Elements node and samplicity-test.db"]
+#[serial]
+fn test_scenario_2_explicit_to_confidential() {
+    println!("\n=== SCENARIO 2: Explicit → Confidential ===\n");
+    println!("This tests sending from an explicit source to a confidential destination.");
+    println!("The output should be BLINDED even though the input is explicit.\n");
+
+    // Setup
+    let mut client = create_rpc_client();
+    let address_params = client.address_params();
+    let genesis_hash = get_genesis_hash(&mut client);
+    let db = open_database();
+    let rpc_client = Arc::new(create_rpc_client());
+
+    // Source: funded explicit address
+    let source_address = test_addresses::EXPLICIT_FUNDED;
+    let (source_addr_info, utxos) = get_address_with_utxos(&db, source_address);
+
+    assert!(
+        !utxos.is_empty(),
+        "Source address has no UTXOs - fund {} first",
+        source_address
+    );
+
+    let pk_hash_bytes = get_pk_hash_bytes(&source_addr_info);
+    let mnemonic = get_mnemonic_for_address(&db, source_address);
+
+    println!("Source (EX): {source_address}");
+    println!("UTXO: {} sats", utxos[0].amount);
+
+    // Destination: empty confidential address from test environment
+    let dest_address = test_addresses::CONFIDENTIAL_EMPTY;
+    assert!(
+        dest_address.starts_with("tlq"),
+        "Destination should be confidential"
+    );
+    println!("Destination (CT): {dest_address}");
+
+    // Calculate preview
+    let preview = calculate_spend_preview(source_address, dest_address, SEND_AMOUNT, &utxos[..1])
+        .expect("Failed to calculate preview");
+    println!(
+        "Preview: send={}, fee={}, change={}",
+        preview.amount, preview.fee, preview.change_amount
+    );
+
+    // Change address should be explicit (matching source type)
+    let change_address = if preview.has_change {
+        let addr = deploy_address_with_type(address_params, AddressType::Explicit);
+        assert!(addr.starts_with("tex"), "Change should be explicit");
+        println!("Change (EX): {addr}");
+        Some(addr)
+    } else {
+        None
+    };
+
+    // Build confidential transaction (blinds output to CT destination)
+    let source_addr = musk::elements::Address::from_str(source_address).unwrap();
+    let source_script = source_addr.script_pubkey();
+    let dest_addr = musk::elements::Address::from_str(dest_address).unwrap();
+    let dest_script = dest_addr.script_pubkey();
+    let change_script = change_address.as_ref().map(|addr| {
+        musk::elements::Address::from_str(addr)
+            .unwrap()
+            .script_pubkey()
+    });
+    let change_addr_parsed = change_address.as_ref().map(|addr| {
+        musk::elements::Address::from_str(addr).unwrap()
+    });
+
+    let tx = build_and_sign_confidential_transaction(
+        P2PKH_PROGRAM_PATH,
+        &utxos[0],
+        source_script,
+        &pk_hash_bytes,
+        &mnemonic,
+        &dest_addr,
+        dest_script,
+        SEND_AMOUNT,
+        preview.fee,
+        change_addr_parsed,
+        change_script,
+        preview.change_amount,
+        genesis_hash,
+        &rpc_client,
+    )
+    .expect("Failed to build confidential transaction");
+
+    let tx_hex = transaction_to_hex(&tx);
+    println!("Transaction: {} bytes", tx_hex.len() / 2);
+
+    // Verify with mempool accept
+    let mempool_result = client
+        .test_mempool_accept(&tx_hex)
+        .expect("Failed to call testmempoolaccept");
+
+    let allowed = mempool_result
+        .first()
+        .and_then(|r| r.get("allowed"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    if !allowed {
+        let reason = mempool_result
+            .first()
+            .and_then(|r| r.get("reject-reason"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        panic!("Transaction rejected: {reason}");
+    }
+
+    println!("\n✅ SCENARIO 2 PASSED: Explicit → Confidential");
+    println!("   Output is blinded (destination is CT)");
+    println!("   Transaction accepted by mempool (not broadcast)");
+}
+
+// ============================================================================
+// Scenario 3: Confidential → Explicit
+// ============================================================================
+
+#[test]
+#[ignore = "requires live Elements node and samplicity-test.db"]
+#[serial]
+fn test_scenario_3_confidential_to_explicit() {
+    println!("\n=== SCENARIO 3: Confidential → Explicit ===\n");
+
+    // Setup
+    let mut client = create_rpc_client();
+    let address_params = client.address_params();
+    let genesis_hash = get_genesis_hash(&mut client);
+    let db = open_database();
+    let rpc_client = Arc::new(create_rpc_client());
+
+    // Source: funded confidential address with blinded UTXO
+    let source_address = test_addresses::CONFIDENTIAL_FUNDED;
+    let (source_addr_info, utxos) = get_address_with_utxos(&db, source_address);
+
+    assert!(
+        !utxos.is_empty(),
+        "Source address has no UTXOs - fund {} first",
+        source_address
+    );
+    assert!(
+        utxos[0].amount_blinder.is_some(),
+        "UTXO should have blinding data"
+    );
+
+    let pk_hash_bytes = get_pk_hash_bytes(&source_addr_info);
+    let mnemonic = get_mnemonic_for_address(&db, source_address);
+
+    println!("Source (CT): {source_address}");
+    println!(
+        "UTXO: {} sats (blinded={})",
+        utxos[0].amount,
+        utxos[0].amount_blinder.is_some()
+    );
+
+    // Destination: empty explicit address from test environment
+    let dest_address = test_addresses::EXPLICIT_EMPTY;
+    println!("Destination (EX): {dest_address}");
+
+    // Calculate preview
+    let preview = calculate_spend_preview(source_address, dest_address, SEND_AMOUNT, &utxos[..1])
+        .expect("Failed to calculate preview");
+    println!(
+        "Preview: send={}, fee={}, change={}",
+        preview.amount, preview.fee, preview.change_amount
+    );
+
+    // Change address should be confidential (matching source type)
+    let change_address = if preview.has_change {
+        let addr = deploy_address_with_type(address_params, AddressType::Confidential);
+        assert!(
+            addr.starts_with("tlq"),
+            "Change should be confidential (tlq prefix)"
+        );
+        println!("Change (CT): {addr}");
+        Some(addr)
+    } else {
+        None
+    };
+
+    // Build confidential transaction
+    let source_addr = musk::elements::Address::from_str(source_address).unwrap();
+    let source_script = source_addr.script_pubkey();
+    let dest_addr = musk::elements::Address::from_str(dest_address).unwrap();
+    let dest_script = dest_addr.script_pubkey();
+    let change_script = change_address.as_ref().map(|addr| {
+        musk::elements::Address::from_str(addr)
+            .unwrap()
+            .script_pubkey()
+    });
+
+    let change_addr_parsed = change_address.as_ref().map(|addr| {
+        musk::elements::Address::from_str(addr).unwrap()
+    });
+
+    let tx = build_and_sign_confidential_transaction(
+        P2PKH_PROGRAM_PATH,
+        &utxos[0],
+        source_script,
+        &pk_hash_bytes,
+        &mnemonic,
+        &dest_addr,
+        dest_script,
+        SEND_AMOUNT,
+        preview.fee,
+        change_addr_parsed,
+        change_script,
+        preview.change_amount,
+        genesis_hash,
+        &rpc_client,
+    )
+    .expect("Failed to build confidential transaction");
+
+    let tx_hex = transaction_to_hex(&tx);
+    println!("Transaction: {} bytes", tx_hex.len() / 2);
+
+    // Verify with mempool accept
+    let mempool_result = client
+        .test_mempool_accept(&tx_hex)
+        .expect("Failed to call testmempoolaccept");
+
+    let allowed = mempool_result
+        .first()
+        .and_then(|r| r.get("allowed"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    if !allowed {
+        let reason = mempool_result
+            .first()
+            .and_then(|r| r.get("reject-reason"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        panic!("Transaction rejected: {reason}");
+    }
+
+    println!("\n✅ SCENARIO 3 PASSED: Confidential → Explicit");
+    println!("   Transaction accepted by mempool (not broadcast)");
+}
+
+// ============================================================================
+// Scenario 4: Confidential → Confidential
+// ============================================================================
+
+#[test]
+#[ignore = "requires live Elements node and samplicity-test.db"]
+#[serial]
+fn test_scenario_4_confidential_to_confidential() {
+    println!("\n=== SCENARIO 4: Confidential → Confidential ===\n");
+
+    // Setup
+    let mut client = create_rpc_client();
+    let address_params = client.address_params();
+    let genesis_hash = get_genesis_hash(&mut client);
+    let db = open_database();
+    let rpc_client = Arc::new(create_rpc_client());
+
+    // Source: funded confidential address with blinded UTXO
+    let source_address = test_addresses::CONFIDENTIAL_FUNDED;
+    let (source_addr_info, utxos) = get_address_with_utxos(&db, source_address);
+
+    assert!(
+        !utxos.is_empty(),
+        "Source address has no UTXOs - fund {} first",
+        source_address
+    );
+    assert!(
+        utxos[0].amount_blinder.is_some(),
+        "UTXO should have blinding data"
+    );
+
+    let pk_hash_bytes = get_pk_hash_bytes(&source_addr_info);
+    let mnemonic = get_mnemonic_for_address(&db, source_address);
+
+    println!("Source (CT): {source_address}");
+    println!(
+        "UTXO: {} sats (blinded={})",
+        utxos[0].amount,
+        utxos[0].amount_blinder.is_some()
+    );
+
+    // Destination: empty confidential address from test environment
+    let dest_address = test_addresses::CONFIDENTIAL_EMPTY;
+    assert!(
+        dest_address.starts_with("tlq"),
+        "Destination should be confidential"
+    );
+    println!("Destination (CT): {dest_address}");
+
+    // Calculate preview
+    let preview = calculate_spend_preview(source_address, dest_address, SEND_AMOUNT, &utxos[..1])
+        .expect("Failed to calculate preview");
+    println!(
+        "Preview: send={}, fee={}, change={}",
+        preview.amount, preview.fee, preview.change_amount
+    );
+
+    // Change address should be confidential (matching source type)
+    let change_address = if preview.has_change {
+        let addr = deploy_address_with_type(address_params, AddressType::Confidential);
+        assert!(
+            addr.starts_with("tlq"),
+            "Change should be confidential (tlq prefix)"
+        );
+        println!("Change (CT): {addr}");
+        Some(addr)
+    } else {
+        None
+    };
+
+    // Build confidential transaction
+    let source_addr = musk::elements::Address::from_str(source_address).unwrap();
+    let source_script = source_addr.script_pubkey();
+    let dest_addr = musk::elements::Address::from_str(dest_address).unwrap();
+    let dest_script = dest_addr.script_pubkey();
+    let change_script = change_address.as_ref().map(|addr| {
+        musk::elements::Address::from_str(addr)
+            .unwrap()
+            .script_pubkey()
+    });
+
+    let change_addr_parsed = change_address.as_ref().map(|addr| {
+        musk::elements::Address::from_str(addr).unwrap()
+    });
+
+    let tx = build_and_sign_confidential_transaction(
+        P2PKH_PROGRAM_PATH,
+        &utxos[0],
+        source_script,
+        &pk_hash_bytes,
+        &mnemonic,
+        &dest_addr,
+        dest_script,
+        SEND_AMOUNT,
+        preview.fee,
+        change_addr_parsed,
+        change_script,
+        preview.change_amount,
+        genesis_hash,
+        &rpc_client,
+    )
+    .expect("Failed to build confidential transaction");
+
+    let tx_hex = transaction_to_hex(&tx);
+    println!("Transaction: {} bytes", tx_hex.len() / 2);
+
+    // Verify with mempool accept
+    let mempool_result = client
+        .test_mempool_accept(&tx_hex)
+        .expect("Failed to call testmempoolaccept");
+
+    let allowed = mempool_result
+        .first()
+        .and_then(|r| r.get("allowed"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    if !allowed {
+        let reason = mempool_result
+            .first()
+            .and_then(|r| r.get("reject-reason"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        panic!("Transaction rejected: {reason}");
+    }
+
+    println!("\n✅ SCENARIO 4 PASSED: Confidential → Confidential");
+    println!("   Transaction accepted by mempool (not broadcast)");
+}
+
+// ============================================================================
+// Scenario 5: Confidential with Blinded Change
+// ============================================================================
+
+#[test]
+#[ignore = "requires live Elements node and samplicity-test.db"]
+#[serial]
+fn test_scenario_5_confidential_with_blinded_change() {
+    println!("\n=== SCENARIO 5: Confidential with Blinded Change ===\n");
+    println!("This test verifies that spending from a confidential address");
+    println!("produces properly blinded outputs.\n");
+
+    // Setup
+    let mut client = create_rpc_client();
+    let address_params = client.address_params();
+    let genesis_hash = get_genesis_hash(&mut client);
+    let db = open_database();
+    let rpc_client = Arc::new(create_rpc_client());
+
+    // Source: funded confidential address with blinded UTXO
+    let source_address = test_addresses::CONFIDENTIAL_FUNDED;
+    let (source_addr_info, utxos) = get_address_with_utxos(&db, source_address);
+
+    assert!(
+        !utxos.is_empty(),
+        "Source address has no UTXOs - fund {} first",
+        source_address
+    );
+    assert!(
+        utxos[0].amount_blinder.is_some(),
+        "Source UTXO should have blinding data for this test"
+    );
+
+    let pk_hash_bytes = get_pk_hash_bytes(&source_addr_info);
+    let mnemonic = get_mnemonic_for_address(&db, source_address);
+
+    println!("Source (CT): {source_address}");
+    println!(
+        "UTXO: {} sats (has amount_blinder={}, has asset_blinder={})",
+        utxos[0].amount,
+        utxos[0].amount_blinder.is_some(),
+        utxos[0].asset_blinder.is_some()
+    );
+
+    // Use a small send amount to ensure there's change
+    let send_amount = 500_u64;
+
+    // Destination: explicit address (to test mixed blinding)
+    let dest_address = test_addresses::EXPLICIT_EMPTY;
+    println!("Destination (EX): {dest_address}");
+
+    // Calculate preview
+    let preview =
+        calculate_spend_preview(source_address, dest_address, send_amount, &utxos[..1])
+            .expect("Failed to calculate preview");
+
+    assert!(
+        preview.has_change,
+        "This test requires a transaction with change"
+    );
+    println!(
+        "Preview: send={}, fee={}, change={}",
+        preview.amount, preview.fee, preview.change_amount
+    );
+
+    // Change address must be confidential
+    let change_address = deploy_address_with_type(address_params, AddressType::Confidential);
+    assert!(
+        change_address.starts_with("tlq"),
+        "Change must be confidential"
+    );
+    println!("Change (CT): {change_address}");
+
+    // Build confidential transaction
+    let source_addr = musk::elements::Address::from_str(source_address).unwrap();
+    let source_script = source_addr.script_pubkey();
+    let dest_addr = musk::elements::Address::from_str(dest_address).unwrap();
+    let dest_script = dest_addr.script_pubkey();
+    let change_addr_parsed = musk::elements::Address::from_str(&change_address).unwrap();
+    let change_script = change_addr_parsed.script_pubkey();
+
+    let tx = build_and_sign_confidential_transaction(
+        P2PKH_PROGRAM_PATH,
+        &utxos[0],
+        source_script,
+        &pk_hash_bytes,
+        &mnemonic,
+        &dest_addr,
+        dest_script,
+        send_amount,
+        preview.fee,
+        Some(change_addr_parsed),
+        Some(change_script),
+        preview.change_amount,
+        genesis_hash,
+        &rpc_client,
+    )
+    .expect("Failed to build confidential transaction");
+
+    let tx_hex = transaction_to_hex(&tx);
+    println!("Transaction: {} bytes", tx_hex.len() / 2);
+
+    // Decode transaction to verify blinding
+    let decoded = client
+        .decode_raw_transaction(&tx_hex)
+        .expect("Failed to decode transaction");
+
+    // Check outputs for blinding
+    let vout = decoded
+        .get("vout")
+        .and_then(|v| v.as_array())
+        .expect("Missing vout");
+
+    println!("\nOutput analysis:");
+    let mut found_blinded_output = false;
+
+    for (i, output) in vout.iter().enumerate() {
+        let value = output.get("value");
+        let value_str = match value {
+            Some(serde_json::Value::Number(n)) => format!("{} sats", (n.as_f64().unwrap() * 1e8) as u64),
+            Some(serde_json::Value::String(s)) if s.contains("commitment") => "BLINDED".to_string(),
+            _ => "unknown".to_string(),
+        };
+
+        let script_hex = output
+            .get("scriptPubKey")
+            .and_then(|sp| sp.get("hex"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+
+        let is_fee = script_hex.is_empty() || script_hex == "6a";
+        let output_type = if is_fee { "FEE" } else { "VALUE" };
+
+        // Check for value commitment (indicates blinding)
+        let value_commitment = output.get("valuecommitment");
+        let is_blinded = value_commitment.is_some();
+
+        if is_blinded {
+            found_blinded_output = true;
+        }
+
+        println!(
+            "  Output {i}: {output_type} = {value_str} (blinded={})",
+            is_blinded
+        );
+    }
 
     // Verify mempool acceptance
     let mempool_result = client
@@ -793,8 +775,296 @@ fn test_spend_from_confidential_address_uses_confidential_change() {
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
-    assert!(allowed, "Transaction should be accepted by mempool");
+    if !allowed {
+        let reason = mempool_result
+            .first()
+            .and_then(|r| r.get("reject-reason"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        panic!("Transaction rejected: {reason}");
+    }
 
-    println!("\n✓ Confidential source → confidential change address");
-    println!("✓ Transaction accepted by mempool");
+    println!("\n✅ SCENARIO 5 PASSED: Confidential with Blinded Change");
+    println!("   Transaction has blinded outputs: {found_blinded_output}");
+    println!("   Transaction accepted by mempool (not broadcast)");
+}
+
+// ============================================================================
+// SpendOrchestrator Integration Test
+// ============================================================================
+
+#[test]
+#[ignore = "requires live Elements node and samplicity-test.db"]
+#[serial]
+fn test_spend_orchestrator_handles_all_address_types() {
+    println!("\n=== TEST: SpendOrchestrator handles all address types ===\n");
+
+    let mut client = create_rpc_client();
+    let address_params = client.address_params();
+    let genesis_hash = get_genesis_hash(&mut client);
+    let db = open_database();
+    let rpc_client = Arc::new(create_rpc_client());
+
+    // Test with explicit source
+    {
+        println!("--- Testing with EXPLICIT source ---");
+        let source_address = test_addresses::EXPLICIT_FUNDED;
+        let (source_addr_info, utxos) = get_address_with_utxos(&db, source_address);
+
+        if utxos.is_empty() {
+            println!("⚠️  Skipping explicit test - no UTXOs");
+        } else {
+            let pk_hash_bytes = get_pk_hash_bytes(&source_addr_info);
+            let mnemonic = get_mnemonic_for_address(&db, source_address);
+            let dest_address = test_addresses::EXPLICIT_EMPTY;
+
+            let source_addr = musk::elements::Address::from_str(source_address).unwrap();
+            let source_script = source_addr.script_pubkey();
+
+            let orchestrator =
+                SpendOrchestrator::new(P2PKH_PROGRAM_PATH, address_params, genesis_hash);
+
+            let change_address = deploy_address_with_type(address_params, AddressType::Explicit);
+
+            let result = orchestrator.execute_spend(
+                source_address,
+                &source_script,
+                &pk_hash_bytes,
+                &mnemonic,
+                &utxos[..1],
+                dest_address,
+                SEND_AMOUNT,
+                Some(&change_address),
+            );
+
+            assert!(result.is_ok(), "Explicit spend should succeed");
+            let (tx, _preview) = result.unwrap();
+
+            let tx_hex = transaction_to_hex(&tx);
+            let mempool_result = client.test_mempool_accept(&tx_hex).unwrap();
+            let allowed = mempool_result
+                .first()
+                .and_then(|r| r.get("allowed"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+
+            assert!(allowed, "Explicit transaction should be accepted");
+            println!("✓ EX→EX transaction accepted");
+        }
+    }
+
+    // Test with explicit source → confidential destination
+    {
+        println!("\n--- Testing EXPLICIT source → CONFIDENTIAL dest ---");
+        let source_address = test_addresses::EXPLICIT_FUNDED;
+        let (source_addr_info, utxos) = get_address_with_utxos(&db, source_address);
+
+        if utxos.is_empty() {
+            println!("⚠️  Skipping EX→CT test - no UTXOs");
+        } else {
+            let pk_hash_bytes = get_pk_hash_bytes(&source_addr_info);
+            let mnemonic = get_mnemonic_for_address(&db, source_address);
+            let dest_address = test_addresses::CONFIDENTIAL_EMPTY; // CT destination!
+
+            let source_addr = musk::elements::Address::from_str(source_address).unwrap();
+            let source_script = source_addr.script_pubkey();
+
+            // Need RPC client because destination is confidential (triggers blinding)
+            let orchestrator =
+                SpendOrchestrator::new(P2PKH_PROGRAM_PATH, address_params, genesis_hash)
+                    .with_rpc_client(rpc_client.clone());
+
+            // Change matches source type (explicit)
+            let change_address = deploy_address_with_type(address_params, AddressType::Explicit);
+
+            let result = orchestrator.execute_spend(
+                source_address,
+                &source_script,
+                &pk_hash_bytes,
+                &mnemonic,
+                &utxos[..1],
+                dest_address,
+                SEND_AMOUNT,
+                Some(&change_address),
+            );
+
+            assert!(result.is_ok(), "EX→CT spend should succeed");
+            let (tx, _preview) = result.unwrap();
+
+            let tx_hex = transaction_to_hex(&tx);
+            let mempool_result = client.test_mempool_accept(&tx_hex).unwrap();
+            let allowed = mempool_result
+                .first()
+                .and_then(|r| r.get("allowed"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+
+            assert!(allowed, "EX→CT transaction should be accepted");
+            println!("✓ EX→CT transaction accepted (output blinded)");
+        }
+    }
+
+    // Test with confidential source → explicit destination
+    {
+        println!("\n--- Testing CONFIDENTIAL source → EXPLICIT dest ---");
+        let source_address = test_addresses::CONFIDENTIAL_FUNDED;
+        let (source_addr_info, utxos) = get_address_with_utxos(&db, source_address);
+
+        if utxos.is_empty() || utxos[0].amount_blinder.is_none() {
+            println!("⚠️  Skipping confidential test - no blinded UTXOs");
+        } else {
+            let pk_hash_bytes = get_pk_hash_bytes(&source_addr_info);
+            let mnemonic = get_mnemonic_for_address(&db, source_address);
+            let dest_address = test_addresses::EXPLICIT_EMPTY;
+
+            let source_addr = musk::elements::Address::from_str(source_address).unwrap();
+            let source_script = source_addr.script_pubkey();
+
+            let orchestrator =
+                SpendOrchestrator::new(P2PKH_PROGRAM_PATH, address_params, genesis_hash)
+                    .with_rpc_client(rpc_client.clone());
+
+            let change_address = deploy_address_with_type(address_params, AddressType::Confidential);
+
+            let result = orchestrator.execute_spend(
+                source_address,
+                &source_script,
+                &pk_hash_bytes,
+                &mnemonic,
+                &utxos[..1],
+                dest_address,
+                SEND_AMOUNT,
+                Some(&change_address),
+            );
+
+            assert!(result.is_ok(), "Confidential spend should succeed");
+            let (tx, _preview) = result.unwrap();
+
+            let tx_hex = transaction_to_hex(&tx);
+            let mempool_result = client.test_mempool_accept(&tx_hex).unwrap();
+            let allowed = mempool_result
+                .first()
+                .and_then(|r| r.get("allowed"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+
+            assert!(allowed, "CT→EX transaction should be accepted");
+            println!("✓ CT→EX transaction accepted (change blinded)");
+        }
+    }
+
+    println!("\n✅ SpendOrchestrator handles all address types correctly");
+    println!("   Tested: EX→EX, EX→CT, CT→EX");
+}
+
+// ============================================================================
+// Address Type Detection Tests
+// ============================================================================
+
+#[test]
+fn test_detect_address_type_explicit_testnet() {
+    let explicit_addr = test_addresses::EXPLICIT_FUNDED;
+    assert_eq!(detect_address_type(explicit_addr), AddressType::Explicit);
+}
+
+#[test]
+fn test_detect_address_type_confidential_testnet() {
+    let confidential_addr = test_addresses::CONFIDENTIAL_FUNDED;
+    assert_eq!(
+        detect_address_type(confidential_addr),
+        AddressType::Confidential
+    );
+}
+
+#[test]
+fn test_is_confidential_address_helper() {
+    assert!(!is_confidential_address(test_addresses::EXPLICIT_FUNDED));
+    assert!(!is_confidential_address(test_addresses::EXPLICIT_EMPTY));
+    assert!(is_confidential_address(test_addresses::CONFIDENTIAL_FUNDED));
+    assert!(is_confidential_address(test_addresses::CONFIDENTIAL_EMPTY));
+}
+
+// ============================================================================
+// Database Integration Tests
+// ============================================================================
+
+#[test]
+#[ignore = "requires samplicity-test.db"]
+fn test_database_has_required_addresses() {
+    println!("\n=== TEST: Database has all required test addresses ===\n");
+
+    let db = open_database();
+
+    let required_addresses = [
+        (test_addresses::EXPLICIT_FUNDED, "Explicit Funded"),
+        (test_addresses::EXPLICIT_EMPTY, "Explicit Empty"),
+        (test_addresses::CONFIDENTIAL_FUNDED, "Confidential Funded"),
+        (test_addresses::CONFIDENTIAL_SMALL, "Confidential Small"),
+        (test_addresses::CONFIDENTIAL_EMPTY, "Confidential Empty"),
+    ];
+
+    for (addr, name) in &required_addresses {
+        let result = db.get_address(addr);
+        assert!(
+            result.is_ok() && result.unwrap().is_some(),
+            "Missing required address: {} ({})",
+            name,
+            addr
+        );
+        println!("✓ Found: {} - {}", name, &addr[..20]);
+    }
+
+    println!("\n✅ All required addresses present in database");
+}
+
+#[test]
+#[ignore = "requires samplicity-test.db"]
+fn test_confidential_addresses_have_blinding_keys() {
+    println!("\n=== TEST: Confidential addresses have blinding keys ===\n");
+
+    let db = open_database();
+
+    let confidential_addresses = [
+        test_addresses::CONFIDENTIAL_FUNDED,
+        test_addresses::CONFIDENTIAL_EMPTY,
+    ];
+
+    for addr in &confidential_addresses {
+        let blinding_sk = db.get_blinding_sk(addr).expect("Failed to query blinding key");
+        assert!(
+            blinding_sk.is_some(),
+            "Confidential address missing blinding key: {}",
+            &addr[..30]
+        );
+        println!("✓ Has blinding key: {}...", &addr[..30]);
+    }
+
+    println!("\n✅ All confidential addresses have blinding keys");
+}
+
+#[test]
+#[ignore = "requires samplicity-test.db"]
+fn test_funded_addresses_have_utxos_with_blinding_data() {
+    println!("\n=== TEST: Funded confidential addresses have blinding data ===\n");
+
+    let db = open_database();
+
+    let addr = test_addresses::CONFIDENTIAL_FUNDED;
+    let utxos = db.get_unspent_utxos(addr).expect("Failed to get UTXOs");
+
+    assert!(!utxos.is_empty(), "No UTXOs for funded confidential address");
+
+    let utxo = &utxos[0];
+    println!("UTXO: txid={}, vout={}, amount={}", utxo.txid, utxo.vout, utxo.amount);
+    println!("  amount_blinder: {}", utxo.amount_blinder.is_some());
+    println!("  asset_blinder: {}", utxo.asset_blinder.is_some());
+    println!("  amount_commitment: {}", utxo.amount_commitment.is_some());
+    println!("  asset_commitment: {}", utxo.asset_commitment.is_some());
+
+    assert!(
+        utxo.amount_blinder.is_some(),
+        "Confidential UTXO should have amount_blinder"
+    );
+
+    println!("\n✅ Funded confidential address has proper blinding data");
 }

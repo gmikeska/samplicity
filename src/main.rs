@@ -74,9 +74,11 @@ async fn deploy_address(
                 .insert_pubkey(&deployed.pubkey, &deployed.pk_hash, &deployed.mnemonic)
             {
                 Ok(pubkey_id) => {
+                    // For confidential addresses, pass the blinding secret key
+                    let blinding_sk_slice = deployed.blinding_sk.as_ref().map(|sk| sk.as_slice());
                     match state
                         .db
-                        .insert_address(&deployed.address, pubkey_id, &deployed.pubkey)
+                        .insert_address(&deployed.address, pubkey_id, &deployed.pubkey, blinding_sk_slice)
                     {
                         Ok(_) => {
                             // Import address to Elements wallet for UTXO tracking
@@ -90,6 +92,20 @@ async fn deploy_address(
                                 // Continue anyway - address is stored, just won't show in listunspent
                             } else {
                                 println!("Imported address to wallet: {}", deployed.address);
+                            }
+
+                            // For confidential addresses, also import the blinding key
+                            // This is required for the wallet to unblind outputs
+                            if let Some(blinding_sk) = &deployed.blinding_sk {
+                                let blinding_key_hex = hex::encode(blinding_sk);
+                                if let Err(e) = state.rpc_client.import_blinding_key(
+                                    &deployed.address,
+                                    &blinding_key_hex,
+                                ) {
+                                    eprintln!("Warning: Failed to import blinding key: {e}");
+                                } else {
+                                    println!("Imported blinding key for confidential address");
+                                }
                             }
 
                             // Broadcast to all WebSocket clients
@@ -185,20 +201,22 @@ async fn balance_polling_task(
                     let balance_sats: u64 = utxos.iter().map(|u| u.amount).sum();
                     let utxo_count = utxos.len();
 
-                    // Sync UTXOs to database
-                    let utxo_data: Vec<(String, u32, u64, String)> = utxos
+                    // Sync UTXOs to database with blinding data for confidential transactions
+                    let utxo_data: Vec<db::UtxoSyncData> = utxos
                         .iter()
-                        .map(|u| {
-                            (
-                                u.txid.to_string(),
-                                u.vout,
-                                u.amount,
-                                spend::LBTC_TESTNET_ASSET_ID.to_string(), // Assume L-BTC
-                            )
+                        .map(|u| db::UtxoSyncData {
+                            txid: u.txid.to_string(),
+                            vout: u.vout,
+                            amount: u.amount,
+                            asset: spend::LBTC_TESTNET_ASSET_ID.to_string(), // Assume L-BTC
+                            amount_blinder: u.amount_blinder.map(|b| b.to_vec()),
+                            asset_blinder: u.asset_blinder.map(|b| b.to_vec()),
+                            amount_commitment: u.amount_commitment.map(|b| b.to_vec()),
+                            asset_commitment: u.asset_commitment.map(|b| b.to_vec()),
                         })
                         .collect();
 
-                    if let Err(e) = db.sync_utxos(&addr.address, &utxo_data) {
+                    if let Err(e) = db.sync_utxos_with_blinding(&addr.address, &utxo_data) {
                         eprintln!("Failed to sync UTXOs for {}: {e}", addr.address);
                     }
 
@@ -401,7 +419,7 @@ fn create_spend_confirm_callback(
                     deploy_change_address(&program_path, address_params, source_address_type)
                         .map_err(|e| format!("Failed to deploy change address: {e}"))?;
 
-                // Store change address in DB
+                // Store change address in DB (with blinding key for confidential addresses)
                 let change_pubkey_id = db
                     .insert_pubkey(
                         &change_deployed.pubkey,
@@ -410,10 +428,12 @@ fn create_spend_confirm_callback(
                     )
                     .map_err(|e| format!("Failed to store change pubkey: {e}"))?;
 
+                let blinding_sk_slice = change_deployed.blinding_sk.as_ref().map(|sk| sk.as_slice());
                 db.insert_address(
                     &change_deployed.address,
                     change_pubkey_id,
                     &change_deployed.pubkey,
+                    blinding_sk_slice,
                 )
                 .map_err(|e| format!("Failed to store change address: {e}"))?;
 
@@ -423,6 +443,19 @@ fn create_spend_confirm_callback(
                 {
                     eprintln!("Warning: Failed to import change address to wallet: {e}");
                     // Continue anyway - address is stored, balance polling may be delayed
+                }
+
+                // For confidential change addresses, also import the blinding key
+                if let Some(blinding_sk) = &change_deployed.blinding_sk {
+                    let blinding_key_hex = hex::encode(blinding_sk);
+                    if let Err(e) = rpc_client.import_blinding_key(
+                        &change_deployed.address,
+                        &blinding_key_hex,
+                    ) {
+                        eprintln!("Warning: Failed to import change address blinding key: {e}");
+                    } else {
+                        println!("Imported blinding key for confidential change address");
+                    }
                 }
 
                 println!("Deployed change address: {}", change_deployed.address);
@@ -448,8 +481,9 @@ fn create_spend_confirm_callback(
                 get_script_pubkey_for_pk_hash(&program_path, &pk_hash_bytes, address_params)
                     .map_err(|e| format!("Failed to get source script: {e}"))?;
 
-            // 7. Create spend orchestrator and execute
-            let orchestrator = SpendOrchestrator::new(&program_path, address_params, genesis_hash);
+            // 7. Create spend orchestrator with RPC client for confidential tx support
+            let orchestrator = SpendOrchestrator::new(&program_path, address_params, genesis_hash)
+                .with_rpc_client(rpc_client.clone());
 
             // Only use the first UTXO (we spend one UTXO at a time)
             let (tx, _) = orchestrator
@@ -536,9 +570,18 @@ async fn main() -> std::io::Result<()> {
             "Importing {} existing addresses to Elements wallet...",
             existing_addrs.len()
         );
-        for addr in existing_addrs {
+        for addr in &existing_addrs {
             if let Err(e) = rpc_client.import_address(&addr.address, Some("samplicity"), false) {
                 eprintln!("  Warning: Failed to import {}: {e}", &addr.address[..20]);
+            }
+        }
+        // Also import blinding keys for confidential addresses
+        for addr in &existing_addrs {
+            if let Ok(Some(blinding_sk)) = db.get_blinding_sk(&addr.address) {
+                let blinding_key_hex = hex::encode(&blinding_sk);
+                if let Err(e) = rpc_client.import_blinding_key(&addr.address, &blinding_key_hex) {
+                    eprintln!("  Warning: Failed to import blinding key for {}: {e}", &addr.address[..20]);
+                }
             }
         }
         println!("Address import complete");

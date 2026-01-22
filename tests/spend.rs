@@ -101,6 +101,10 @@ fn test_calculate_spend_preview_insufficient_funds() {
         amount: 1000, // Only 1000 sats
         asset: LBTC_TESTNET_ASSET_ID.to_string(),
         spent: false,
+        amount_blinder: None,
+        asset_blinder: None,
+        amount_commitment: None,
+        asset_commitment: None,
     }];
 
     let result = calculate_spend_preview("src", "dst", 10000, &utxos);
@@ -124,6 +128,10 @@ fn test_calculate_spend_preview_with_change() {
         amount: 100_000, // 100k sats
         asset: LBTC_TESTNET_ASSET_ID.to_string(),
         spent: false,
+        amount_blinder: None,
+        asset_blinder: None,
+        amount_commitment: None,
+        asset_commitment: None,
     }];
 
     let preview = calculate_spend_preview("src", "dst", 50000, &utxos).unwrap();
@@ -143,6 +151,10 @@ fn test_calculate_spend_preview_no_change_dust() {
         amount: 1000, // 1000 sats
         asset: LBTC_TESTNET_ASSET_ID.to_string(),
         spent: false,
+        amount_blinder: None,
+        asset_blinder: None,
+        amount_commitment: None,
+        asset_commitment: None,
     }];
 
     // Spending 400 sats + 500 fee = 900, leaving 100 sats (below dust threshold of 546)
@@ -180,6 +192,30 @@ fn test_spend_error_display() {
 
     let program_err = SpendError::ProgramError("program issue".to_string());
     assert!(program_err.to_string().contains("Program error"));
+
+    let confidential_err = SpendError::ConfidentialNotSupported("test reason".to_string());
+    assert!(confidential_err.to_string().contains("Confidential spending not yet supported"));
+    assert!(confidential_err.to_string().contains("test reason"));
+}
+
+#[test]
+fn test_is_confidential_address() {
+    use samplicity::spend::is_confidential_address;
+
+    // Testnet confidential addresses start with "tlq"
+    assert!(is_confidential_address("tlq1pqgked3uaq994tup3ef9nmsh7nvscvxsv27qqz0e3jpjf9epfhp8uuw2dq2wl6ueld8vd2gjcecqznjhheq8nvg0k5trjjjl90w34fl5g8jvwccx4hes5"));
+    
+    // Mainnet confidential addresses start with "lq"
+    assert!(is_confidential_address("lq1qqexample"));
+    
+    // Testnet explicit addresses start with "tex"
+    assert!(!is_confidential_address("tex1pksj0z78nxz6cjcv20t8hev3hvx3qd35wc8h80rhw845t3574nfds8jnwq4"));
+    
+    // Mainnet explicit addresses start with "ex"
+    assert!(!is_confidential_address("ex1qexample"));
+    
+    // Other prefixes are not confidential
+    assert!(!is_confidential_address("ert1qexample")); // regtest
 }
 
 #[test]
@@ -245,6 +281,10 @@ fn test_stored_utxo_to_musk_utxo() {
         amount: 100_000,
         asset: LBTC_TESTNET_ASSET_ID.to_string(),
         spent: false,
+        amount_blinder: None,
+        asset_blinder: None,
+        amount_commitment: None,
+        asset_commitment: None,
     };
 
     // Create an empty script for testing
@@ -312,6 +352,10 @@ fn test_spend_preview_total_input() {
             amount: 50000,
             asset: LBTC_TESTNET_ASSET_ID.to_string(),
             spent: false,
+            amount_blinder: None,
+            asset_blinder: None,
+            amount_commitment: None,
+            asset_commitment: None,
         },
         StoredUtxo {
             id: 2,
@@ -321,6 +365,10 @@ fn test_spend_preview_total_input() {
             amount: 50000,
             asset: LBTC_TESTNET_ASSET_ID.to_string(),
             spent: false,
+            amount_blinder: None,
+            asset_blinder: None,
+            amount_commitment: None,
+            asset_commitment: None,
         },
     ];
 

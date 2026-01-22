@@ -51,6 +51,44 @@ pub struct StoredUtxo {
     pub amount: u64,
     pub asset: String,
     pub spent: bool,
+    /// Amount blinding factor (32 bytes) - for confidential UTXOs
+    #[serde(skip)]
+    pub amount_blinder: Option<Vec<u8>>,
+    /// Asset blinding factor (32 bytes) - for confidential UTXOs
+    #[serde(skip)]
+    pub asset_blinder: Option<Vec<u8>>,
+    /// Amount commitment (33 bytes) - for confidential UTXOs
+    #[serde(skip)]
+    pub amount_commitment: Option<Vec<u8>>,
+    /// Asset commitment (33 bytes) - for confidential UTXOs
+    #[serde(skip)]
+    pub asset_commitment: Option<Vec<u8>>,
+}
+
+impl StoredUtxo {
+    /// Check if this UTXO is from a confidential transaction
+    #[must_use]
+    pub fn is_confidential(&self) -> bool {
+        if let Some(blinder) = &self.amount_blinder {
+            if blinder.iter().any(|&b| b != 0) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// UTXO data from RPC for sync operations (includes blinding data)
+#[derive(Debug, Clone)]
+pub struct UtxoSyncData {
+    pub txid: String,
+    pub vout: u32,
+    pub amount: u64,
+    pub asset: String,
+    pub amount_blinder: Option<Vec<u8>>,
+    pub asset_blinder: Option<Vec<u8>>,
+    pub amount_commitment: Option<Vec<u8>>,
+    pub asset_commitment: Option<Vec<u8>>,
 }
 
 impl Database {
@@ -96,12 +134,26 @@ impl Database {
                 address TEXT NOT NULL UNIQUE,
                 pubkey_id INTEGER NOT NULL,
                 witness_pk BLOB NOT NULL,
+                blinding_sk BLOB,
                 balance INTEGER DEFAULT 0,
                 deployed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(pubkey_id) REFERENCES pubkeys(id)
             )",
             [],
         )?;
+
+        // Migration: add blinding_sk column if it doesn't exist (for existing databases)
+        let has_blinding_sk: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('addresses') WHERE name = 'blinding_sk'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !has_blinding_sk {
+            conn.execute("ALTER TABLE addresses ADD COLUMN blinding_sk BLOB", [])?;
+        }
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS utxos (
@@ -112,11 +164,31 @@ impl Database {
                 amount INTEGER NOT NULL,
                 asset TEXT NOT NULL,
                 spent INTEGER DEFAULT 0,
+                amount_blinder BLOB,
+                asset_blinder BLOB,
+                amount_commitment BLOB,
+                asset_commitment BLOB,
                 FOREIGN KEY(address_id) REFERENCES addresses(id),
                 UNIQUE(txid, vout)
             )",
             [],
         )?;
+
+        // Migration: add blinding columns to utxos if they don't exist (for existing databases)
+        let has_amount_blinder: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('utxos') WHERE name = 'amount_blinder'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !has_amount_blinder {
+            conn.execute("ALTER TABLE utxos ADD COLUMN amount_blinder BLOB", [])?;
+            conn.execute("ALTER TABLE utxos ADD COLUMN asset_blinder BLOB", [])?;
+            conn.execute("ALTER TABLE utxos ADD COLUMN amount_commitment BLOB", [])?;
+            conn.execute("ALTER TABLE utxos ADD COLUMN asset_commitment BLOB", [])?;
+        }
 
         drop(conn);
         Ok(())
@@ -133,13 +205,37 @@ impl Database {
     }
 
     /// Insert a new address and return its ID
-    pub fn insert_address(&self, address: &str, pubkey_id: i64, witness_pk: &[u8]) -> Result<i64> {
+    ///
+    /// For confidential addresses, pass the blinding secret key so the wallet
+    /// can unblind outputs sent to this address.
+    pub fn insert_address(
+        &self,
+        address: &str,
+        pubkey_id: i64,
+        witness_pk: &[u8],
+        blinding_sk: Option<&[u8]>,
+    ) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO addresses (address, pubkey_id, witness_pk, balance) VALUES (?1, ?2, ?3, 0)",
-            params![address, pubkey_id, witness_pk],
+            "INSERT INTO addresses (address, pubkey_id, witness_pk, blinding_sk, balance) VALUES (?1, ?2, ?3, ?4, 0)",
+            params![address, pubkey_id, witness_pk, blinding_sk],
         )?;
         Ok(conn.last_insert_rowid())
+    }
+
+    /// Get the blinding secret key for a confidential address
+    ///
+    /// Returns None if the address is not found or is not a confidential address.
+    pub fn get_blinding_sk(&self, address: &str) -> Result<Option<Vec<u8>>> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<Option<Vec<u8>>> = conn
+            .query_row(
+                "SELECT blinding_sk FROM addresses WHERE address = ?1",
+                params![address],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(result.flatten())
     }
 
     /// Get all addresses with their pubkey hashes
@@ -252,7 +348,9 @@ impl Database {
     // ==================== UTXO Methods ====================
 
     /// Insert or update a UTXO (upsert based on txid+vout)
-    #[allow(clippy::cast_possible_wrap)]
+    ///
+    /// For confidential UTXOs, pass the blinding data which is needed when spending.
+    #[allow(clippy::cast_possible_wrap, clippy::too_many_arguments)]
     pub fn upsert_utxo(
         &self,
         address_id: i64,
@@ -260,15 +358,23 @@ impl Database {
         vout: u32,
         amount: u64,
         asset: &str,
+        amount_blinder: Option<&[u8]>,
+        asset_blinder: Option<&[u8]>,
+        amount_commitment: Option<&[u8]>,
+        asset_commitment: Option<&[u8]>,
     ) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO utxos (address_id, txid, vout, amount, asset, spent)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0)
+            "INSERT INTO utxos (address_id, txid, vout, amount, asset, spent, amount_blinder, asset_blinder, amount_commitment, asset_commitment)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)
              ON CONFLICT(txid, vout) DO UPDATE SET
                 amount = excluded.amount,
-                asset = excluded.asset",
-            params![address_id, txid, i64::from(vout), amount as i64, asset],
+                asset = excluded.asset,
+                amount_blinder = excluded.amount_blinder,
+                asset_blinder = excluded.asset_blinder,
+                amount_commitment = excluded.amount_commitment,
+                asset_commitment = excluded.asset_commitment",
+            params![address_id, txid, i64::from(vout), amount as i64, asset, amount_blinder, asset_blinder, amount_commitment, asset_commitment],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -278,7 +384,8 @@ impl Database {
     pub fn get_unspent_utxos(&self, address: &str) -> Result<Vec<StoredUtxo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT u.id, u.address_id, u.txid, u.vout, u.amount, u.asset, u.spent
+            "SELECT u.id, u.address_id, u.txid, u.vout, u.amount, u.asset, u.spent,
+                    u.amount_blinder, u.asset_blinder, u.amount_commitment, u.asset_commitment
              FROM utxos u
              JOIN addresses a ON u.address_id = a.id
              WHERE a.address = ?1 AND u.spent = 0",
@@ -293,6 +400,10 @@ impl Database {
                 amount: row.get::<_, i64>(4)? as u64,
                 asset: row.get(5)?,
                 spent: row.get::<_, i64>(6)? != 0,
+                amount_blinder: row.get(7)?,
+                asset_blinder: row.get(8)?,
+                amount_commitment: row.get(9)?,
+                asset_commitment: row.get(10)?,
             })
         })?;
 
@@ -305,7 +416,8 @@ impl Database {
     pub fn get_unspent_utxos_by_id(&self, address_id: i64) -> Result<Vec<StoredUtxo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, address_id, txid, vout, amount, asset, spent
+            "SELECT id, address_id, txid, vout, amount, asset, spent,
+                    amount_blinder, asset_blinder, amount_commitment, asset_commitment
              FROM utxos
              WHERE address_id = ?1 AND spent = 0",
         )?;
@@ -319,6 +431,10 @@ impl Database {
                 amount: row.get::<_, i64>(4)? as u64,
                 asset: row.get(5)?,
                 spent: row.get::<_, i64>(6)? != 0,
+                amount_blinder: row.get(7)?,
+                asset_blinder: row.get(8)?,
+                amount_commitment: row.get(9)?,
+                asset_commitment: row.get(10)?,
             })
         })?;
 
@@ -369,6 +485,42 @@ impl Database {
     }
 
     /// Sync UTXOs from RPC data for an address
+    ///
+    /// This method accepts UTXO data including blinding information for confidential transactions.
+    pub fn sync_utxos_with_blinding(&self, address: &str, utxos: &[UtxoSyncData]) -> Result<()> {
+        // Get address ID
+        let addr = self.get_address(address)?;
+        let address_id = match addr {
+            Some(a) => a.id,
+            None => return Ok(()), // Address not found, skip
+        };
+
+        // Upsert each UTXO with blinding data
+        for utxo in utxos {
+            self.upsert_utxo(
+                address_id,
+                &utxo.txid,
+                utxo.vout,
+                utxo.amount,
+                &utxo.asset,
+                utxo.amount_blinder.as_deref(),
+                utxo.asset_blinder.as_deref(),
+                utxo.amount_commitment.as_deref(),
+                utxo.asset_commitment.as_deref(),
+            )?;
+        }
+
+        // Remove UTXOs that are no longer present
+        let keep_list: Vec<(String, u32)> = utxos
+            .iter()
+            .map(|u| (u.txid.clone(), u.vout))
+            .collect();
+        self.remove_utxos_not_in_list(address_id, &keep_list)?;
+
+        Ok(())
+    }
+
+    /// Sync UTXOs from RPC data for an address (legacy method without blinding)
     pub fn sync_utxos(
         &self,
         address: &str,
@@ -381,9 +533,9 @@ impl Database {
             None => return Ok(()), // Address not found, skip
         };
 
-        // Upsert each UTXO
+        // Upsert each UTXO (without blinding data)
         for (txid, vout, amount, asset) in utxos {
-            self.upsert_utxo(address_id, txid, *vout, *amount, asset)?;
+            self.upsert_utxo(address_id, txid, *vout, *amount, asset, None, None, None, None)?;
         }
 
         // Remove UTXOs that are no longer present
